@@ -127,6 +127,8 @@ export class MusicWorld implements World {
   private previousEndPromise?: Promise<void>;
   private callTimes: number[] = [];
   private silenceTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private listeningStartedAt = 0;
   private logger: (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => void;
 
   constructor(private readonly opts: MusicWorldOptions) {
@@ -250,6 +252,25 @@ export class MusicWorld implements World {
     this.stopTimer();
     this.silenceTimer = setInterval(() => this.segmenter?.tick(), 500);
     this.silenceTimer.unref?.();
+    this.listeningStartedAt = Date.now();
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => { void this.pushHeartbeat(); }, 120_000);
+    this.heartbeatTimer.unref?.();
+  }
+
+  /** 每两分钟给 bot 一条【在听】状态，让它有机会冒一个很小的气泡。 */
+  private async pushHeartbeat(): Promise<void> {
+    if (!this.running) return;
+    const minutes = Math.max(1, Math.round((Date.now() - this.listeningStartedAt) / 60_000));
+    const track = this.lastTrack ? `当前：${this.lastTrack}` : '在听系统声音';
+    await this.pushState(`【在听】${track}；已经一起听了约 ${minutes} 分钟。`, 'info', { heartbeat: true });
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 
   private stopTimer(): void {
@@ -262,6 +283,7 @@ export class MusicWorld implements World {
   private stopCapture(): void {
     this.running = false;
     this.stopTimer();
+    this.stopHeartbeat();
     this.segmenter = null;
     this.capture?.stop();
     this.capture = null;
@@ -539,8 +561,8 @@ export class MusicWorld implements World {
     return true;
   }
 
-  private async pushState(text: string, level: 'info' | 'warn' | 'error' = 'info'): Promise<void> {
-    await this.pushEvent('music.state', text, { origin: 'internal', meta: { level } }, 'flush');
+  private async pushState(text: string, level: 'info' | 'warn' | 'error' = 'info', extra?: Record<string, unknown>): Promise<void> {
+    await this.pushEvent('music.state', text, { origin: 'internal', meta: { level, ...(extra ?? {}) } }, 'flush');
   }
 
   private async pushEvent(

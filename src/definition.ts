@@ -49,7 +49,7 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
       },
       {
         type: 'music.state',
-        description: { zh: 'World 自己的状态：待命、开始听、停止、错误。', en: 'The World state: standby, listening, stopped, error.' },
+        description: { zh: 'World 自己的状态：待命、开始听、停止、错误，以及每两分钟的【在听】心跳。', en: 'The World state: standby, listening, stopped, error, and a two-minute listening heartbeat.' },
         trigger: 'flush',
       },
     ],

@@ -76,6 +76,12 @@
 - 一首结束：按配置「一直听，直到你说停」或「这首结束就停」。
 - 没有静音的连续串烧不会自动切歌；有静音间隙才会分下一首。
 
+## 听歌状态
+
+- 开始听时 bot 会先冒一个很短的气泡：“我在听 🎧” / “戴上耳机啦”。
+- 之后每 2 分钟 World 发一条【在听】状态，bot 可以回一个很小的气泡/表情（“在听呢” / “🎧”），不会每次都说、不会刷屏。
+- World 页的状态灯一直显示「正在听 / 待命」；也可以问 bot“还在听吗”，它会用 `music_now` 看当前曲目和窗口。
+
 ## 接口、模型和 Key
 
 - **DashScope / Qwen-Omni**：默认；地址 `https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 `qwen3.8-omni-flash`（可换 `qwen3-omni-flash` / `qwen-omni-turbo`）。
@@ -113,8 +119,10 @@
 | 可选 | **桌面播放器**（网易云 / QQ 音乐 / Spotify / Media Player 等） | 通过 Windows 媒体会话给出准确曲目/歌手，查完整歌词 |
 | 可选 | **LRCLIB**（免费，无 Key） | 有曲目信息时提供完整歌词；服务不可用就退回听写 |
 | 可选 | 支持图片的模型 | 浏览器/未知来源时，屏幕截图兜底识别播放器 |
-| 不需要 | 听觉 / 语音转文本 / 网易云等别的 World | 本 World 自己采集、自己分析，一个包全包 |
-| 不需要 | Python / GPU / 麦克风 | 纯 Node + 云端 |
+| 不需要 | 听觉 / 语音转文本 / 一起听（网易云）等别的 World | 本 World 自包含，不 import/调用其他 World |
+| 不需要 | 麦克风 / Python / GPU | 听系统输出，分析在云端 |
+
+> 桌宠的 `pet_say`、动作/表情是 Coopanion 自带的表达界面，不算本 World 的插件依赖；World 本身只依赖 Windows、`loopback-capture` 和你的分析 API。
 
 ## 歌词策略
 
@@ -180,6 +188,8 @@ corepack pnpm test
 corepack pnpm describe:extension <包目录>
 corepack pnpm check:extension <包目录>
 ```
+
+发布到 npm / GitHub / Coo 市场的步骤见 [PUBLISHING.md](PUBLISHING.md)。
 
 ## 市场标签
 
