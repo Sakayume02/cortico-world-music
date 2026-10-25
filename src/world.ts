@@ -73,8 +73,6 @@ interface ActiveSegment {
   keyWarned: boolean;
   confirmed?: boolean;
   dropped?: boolean;
-  screenshot?: BlobInput;
-  note?: string;
   error?: string;
 }
 
@@ -183,30 +181,8 @@ export class MusicWorld implements World {
   private async onSegmentStart(startedAt: number): Promise<void> {
     const segment: ActiveSegment = { startedAt, analyses: [], pending: [], windows: 0, keyWarned: false };
     this.segment = segment;
-
-    let screenshot: BlobInput | undefined;
-    let note = '';
-    if (this.opts.cfg.screenFallback) {
-      const acceptsImage = this.host?.modelFacts.accepts('image/png') ?? false;
-      if (!acceptsImage) {
-        note = '（当前模型不接受图片，无法用截图识别播放器。）';
-      } else {
-        try {
-          const shot = await (this.opts.screenCapture ?? (() => capturePrimaryScreen(this.opts.dataDir)))();
-          if (shot) {
-            screenshot = { bytes: shot.bytes, mime: shot.mime, name: shot.name, fallbackText: '换歌时的主屏截图，用来识别播放器/歌名' };
-          } else {
-            note = '（截屏失败，拿不到播放器画面。）';
-          }
-        } catch {
-          note = '（截屏失败，拿不到播放器画面。）';
-        }
-      }
-    }
-    segment.screenshot = screenshot;
-    segment.note = note;
     // 先不宣布“开始听音乐”：等第一个窗口确认它确实是音乐（不是直播说话/播客）再发 music.started。
-    this.logger('debug', '听到声音，等待第一个窗口确认是不是音乐', { screenFallback: this.opts.cfg.screenFallback });
+    this.logger('debug', '听到声音，等待第一个窗口确认是不是音乐');
   }
 
   private async onWindow(window: WindowChunk): Promise<void> {
@@ -247,12 +223,36 @@ export class MusicWorld implements World {
             segment.confirmed = false;
             segment.dropped = true;
             this.logger('debug', '不是音乐，丢弃这一段', { summary: outcome.analysis.summary, confidence: outcome.analysis.musicConfidence });
+            // 立刻清掉这一段，别让直播说话一直占着「当前段」，否则后面真的音乐要等静音才进来。
+            if (this.segment === segment) {
+              this.segment = undefined;
+              this.segmenter?.reset();
+            }
             return;
           }
           segment.confirmed = true;
+          let screenshot: BlobInput | undefined;
+          let note = '';
+          if (this.opts.cfg.screenFallback) {
+            const acceptsImage = this.host?.modelFacts.accepts('image/png') ?? false;
+            if (!acceptsImage) {
+              note = '（当前模型不接受图片，无法用截图识别播放器。）';
+            } else {
+              try {
+                const shot = await (this.opts.screenCapture ?? (() => capturePrimaryScreen(this.opts.dataDir)))();
+                if (shot) {
+                  screenshot = { bytes: shot.bytes, mime: shot.mime, name: shot.name, fallbackText: '确认是音乐时的主屏截图，用来识别播放器/歌名' };
+                } else {
+                  note = '（截屏失败，拿不到播放器画面。）';
+                }
+              } catch {
+                note = '（截屏失败，拿不到播放器画面。）';
+              }
+            }
+          }
           const lines = ['开始听到一段音乐（系统声音）。已确认是音乐。'];
-          if (segment.screenshot) lines.push('附上开始时的屏幕截图，供你识别播放器/歌名；识别不出就只说听感。');
-          if (segment.note) lines.push(segment.note);
+          if (screenshot) lines.push('附上一张当前屏幕截图，供你识别播放器/歌名；识别不出就只说听感。');
+          if (note) lines.push(note);
           await this.pushEvent('music.started', lines.join('\n'), {
             origin: 'external',
             meta: {
@@ -262,9 +262,8 @@ export class MusicWorld implements World {
               model: this.opts.cfg.model,
               musicConfidence: outcome.analysis.musicConfidence,
             },
-            blobs: segment.screenshot ? [segment.screenshot] : undefined,
+            blobs: screenshot ? [screenshot] : undefined,
           }, 'flush');
-          segment.screenshot = undefined;
         }
         segment.analyses.push(outcome.analysis);
         this.lastAnalysis = outcome.analysis;
