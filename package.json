@@ -1,8 +1,8 @@
 {
   "name": "cortico-world-music",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "音乐（Music）—— 让 Coopanion 的 bot 听见电脑上正在播放的音乐：系统环回采集、云端理解乐器/节奏/调性/情绪与歌词，默认在一段结束时总结，也可实时感受。只支持 Windows。",
+  "description": "一起感受音乐——在用户明确要求后，和桌宠一起听电脑上的音乐：系统环回采集、播放器曲目信息与完整歌词、云端沉浸式感受，让 bot 像爱音乐的人一样回应，而不是报参数。只支持 Windows。",
   "license": "MIT",
   "keywords": [
     "cortico-world",
@@ -26,7 +26,7 @@
   "cortico": {
     "kind": "world",
     "api": 6,
-    "displayName": "音乐",
+    "displayName": "一起感受音乐",
     "tags": [
       "voice",
       "requires-key",
@@ -38,6 +38,7 @@
   "files": [
     "src",
     "README.md",
+    "PROJECT.md",
     "CHANGELOG.md",
     "describe.json",
     "LICENSE"

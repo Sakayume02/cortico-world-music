@@ -1,6 +1,6 @@
 /** DashScope OpenAI 兼容接口的音频理解调用；只负责一次窗口分析。 */
 import type { MusicConfigSection } from './config.ts';
-import { buildAnalysisPrompt, parseAnalysis, type MusicAnalysis } from './prompt.ts';
+import { buildAnalysisPrompt, parseAnalysis, type ListeningContext, type MusicAnalysis } from './prompt.ts';
 
 export interface AnalysisOutcome {
   analysis?: MusicAnalysis;
@@ -12,6 +12,7 @@ export interface AnalyzeOptions {
   cfg: MusicConfigSection;
   apiKey: string;
   windowSec: number;
+  context?: ListeningContext;
   fetchImpl?: typeof fetch;
 }
 
@@ -74,7 +75,7 @@ export async function analyzeWithDashscope(opts: AnalyzeOptions): Promise<Analys
 
   const base = cfg.baseUrl.replace(/\/+$/, '');
   const url = `${base}/chat/completions`;
-  const prompt = buildAnalysisPrompt(cfg, windowSec);
+  const prompt = buildAnalysisPrompt(cfg, windowSec, opts.context);
   const body = {
     model: cfg.model,
     messages: [{

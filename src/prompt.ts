@@ -1,6 +1,7 @@
 /**
  * 分析提示词与结果格式化。
- * 判断框架来自 Aaron Copland《如何听懂音乐》：三个层次（感官/表现/纯音乐）+ 四个要素，先描述再解释。
+ * 判断框架来自 Aaron Copland《如何听懂音乐》：三个层次（感官/表现/纯音乐）+ 四个要素。
+ * 但写给 bot 的正文分成「感受」和「内部参考」：术语给 bot 理解，不给孩子照念。
  */
 import type { MusicConfigSection } from './config.ts';
 
@@ -16,9 +17,20 @@ export interface MusicMood {
   confidence: number;
 }
 
+export type LyricsSource = 'asr' | 'lrclib' | 'metadata';
+
 export interface MusicAnalysis {
   summary: string;
-  /** 这段音频是不是音乐（歌曲/器乐/纯音乐/说唱伴奏算；播客/有声书/直播说话不算）。 */
+  /** 沉浸式感受：第一人称/画面/身体，不说参数。 */
+  listenerSummary?: string;
+  /** 情绪质地，一句话。 */
+  feeling?: string;
+  /** 脑海里的画面/场景。 */
+  imagery?: string;
+  /** 身体反应。 */
+  body?: string;
+  /** 情绪走向：从…到… */
+  arc?: string;
   isMusic?: boolean;
   musicConfidence?: number;
   tempoBpm?: number;
@@ -32,9 +44,16 @@ export interface MusicAnalysis {
   texture?: string;
   structure?: string;
   mood?: MusicMood;
-  lyrics?: { present: boolean; text: string; confidence: number };
+  lyrics?: { present: boolean; text: string; confidence: number; source?: LyricsSource; complete?: boolean };
   uncertain?: string[];
   raw?: string;
+}
+
+export interface ListeningContext {
+  track?: string;
+  artist?: string;
+  lyrics?: string;
+  lyricsSource?: LyricsSource;
 }
 
 /** 受控乐器词表；提示词里给全，要求不确定就标低置信度。 */
@@ -53,7 +72,12 @@ export const INSTRUMENT_TAXONOMY: readonly string[] = [
 ];
 
 const SCHEMA = `{
-  "summary": "一两句中文，先说听到了什么，再说像什么",
+  "summary": "一句话听感，给 bot 看的摘要",
+  "listenerSummary": "2-4 句沉浸式感受：像一个人正听着这段音乐，写氛围、画面、身体和情绪；不要报 BPM/调式/乐器清单",
+  "feeling": "情绪的质地与温度，一句话，例如「脆弱而克制的悲伤，带着不舍」",
+  "imagery": "脑海里的画面/场景，一两句",
+  "body": "身体反应：呼吸、胸口、肩膀、想不想动、起鸡皮疙瘩、想闭眼等",
+  "arc": "这段音乐的情绪走向：从…到…",
   "isMusic": true,
   "musicConfidence": 0.0,
   "tempoBpm": 0,
@@ -67,34 +91,55 @@ const SCHEMA = `{
   "texture": "单声/主调/复调/密集/稀疏",
   "structure": "重复/对比/发展/回归/段落感；没有就空",
   "mood": {"valence": 0.0, "arousal": 0.0, "quality": "情绪的质地，一句话", "confidence": 0.0},
-  "lyrics": {"present": false, "text": "只写确实听清的短句；听不清就空", "confidence": 0.0},
+  "lyrics": {"present": false, "text": "只写确实听清的短句；有可信歌词时照抄；听不清就空", "confidence": 0.0},
   "uncertain": ["不确定的点"]
 }`;
 
-export function buildAnalysisPrompt(cfg: MusicConfigSection, windowSec: number): string {
+export function buildAnalysisPrompt(
+  cfg: MusicConfigSection,
+  windowSec: number,
+  context?: ListeningContext,
+): string {
   const hints = cfg.instrumentHints.trim();
+  const known = context?.lyrics?.trim();
+  const trackLine = context?.track
+    ? `你正在听的曲目（来自播放器媒体信息）：${context.track}${context.artist ? ' — ' + context.artist : ''}。`
+    : '';
   return [
-    '你是一个严谨的音乐分析器。听这段音频，按下面框架分析，只返回一个 JSON 对象，不要 markdown、不要解释。',
+    '你是一个真正爱音乐的人，也是一个懂音乐的音乐人。你正在和老大一起听音乐。',
+    '先用身体和情绪去听，再用术语核对；术语只放在技术字段里给 bot 理解，不要写进 listenerSummary，也不要在感受里列参数。',
     '',
     '框架（Aaron Copland《如何听懂音乐》）：',
     '1. 感官层：音色、音区、力度、织体、录音质感。',
-    '2. 表现层：情绪/心理状态。音乐表达的是情绪状态，不是固定情节；同一种情绪有不同质地（悲观的悲伤 / 哀而不伤 / 带微笑的悲伤），不要只给一个标签。',
+    '2. 表现层：情绪/心理状态。音乐表达的是情绪状态，不是固定情节；同一种情绪有不同质地（悲观的悲伤 / 哀而不伤 / 带微笑的悲伤）。',
     '3. 纯音乐层：节奏、旋律、和声/调式、形式（重复/对比/发展/回归）。',
     '',
-    '硬性规则：',
-    '- 只写你确实能从音频里听到的；不确定就写进 uncertain，并把 confidence 降低。',
+    '写「感受」的规则：',
+    '- listenerSummary 要像一个真正在听的人：可以写呼吸、画面、身体反应、想做什么；不要写「BPM 多少」「什么调」「乐器置信度」。',
+    '- 感受要具体、有温度，不要套话；宁可说「像傍晚空房间里的一架旧钢琴」，不要写「情绪悲伤」。',
+    '- 情绪要质地：不是「悲伤」，而是「克制的惆怅 / 哀而不伤 / 带微笑的悲伤」。',
+    '- 纯音乐没有人声就写画面和身体，不要假装听到了歌词。',
+    '',
+    '判断与术语（这些只给 bot 理解，不要照念给老大）：',
+    '- 先判断这段音频是不是音乐：歌曲、器乐、纯音乐、说唱伴奏算音乐；播客、有声书、直播里纯说话、ASMR 说话不算。不是音乐就把 isMusic 设为 false（仍返回完整 JSON），musicConfidence 给判断置信度。',
     '- 不要用「某调 = 某情绪」的硬映射；调式只是线索之一，必须结合速度、节奏、音色、力度、旋律一起判断。',
     '- 乐器必须从受控词表里选；不确定是古筝还是 koto、尺八还是箫时，给最可能的 1–2 个并标低置信度，不要默认钢琴。',
-    '- 歌词只写确实听清的短句（最多两句），听不清就 present=false、text 空；不要编造歌词。',
-    '- 这是纯音乐或人声都可能；如果没有人声，lyrics.present=false。',
-    '- 先判断这段音频是不是音乐：歌曲、器乐、纯音乐、说唱伴奏算音乐；播客、有声书、直播里纯说话、ASMR 说话不算。不是音乐就把 isMusic 设为 false（仍返回完整 JSON），musicConfidence 给判断置信度。',
-    '- 分析窗口约 ' + windowSec + ' 秒，看不到整首的段落就如实说。',
+    `- 分析窗口约 ${windowSec} 秒，看不到整首的段落就如实说。`,
     hints ? '- 额外提示：' + hints : '',
+    '',
+    '歌词规则：',
+    known
+      ? '- 下面给出了来自播放器信息 + LRCLIB 的完整歌词，可信；不要改写、不要补全、不要整段复述。用它理解歌曲在说什么，lyrics.text 可以照抄；如果不确定就别改。'
+      : '- 没有可信歌词：只写确实听清的短句（最多两句），听不清就 present=false、text 空；不要编造。',
+    '- 歌词可能听错；在感受里引用时只用短句，并留余地。',
+    '',
+    trackLine,
+    known ? '已知完整歌词（可信，用来理解内容；不要整段复述）：\n' + known : '',
     '',
     '受控乐器词表（只能从这里选；也可以写「不确定」）：',
     INSTRUMENT_TAXONOMY.join('、'),
     '',
-    '返回 JSON，字段如下：',
+    '只返回一个 JSON 对象，不要 markdown、不要解释。字段如下：',
     SCHEMA,
   ].filter(Boolean).join('\n');
 }
@@ -103,7 +148,6 @@ const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(mi
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
 
-/** 把模型返回的文本解析成分析结果；解析失败时保留原文当 summary。 */
 export function parseAnalysis(text: string): MusicAnalysis {
   const raw = text.trim();
   const start = raw.indexOf('{');
@@ -127,6 +171,11 @@ export function parseAnalysis(text: string): MusicAnalysis {
   const lyricsObj = obj.lyrics && typeof obj.lyrics === 'object' ? obj.lyrics as Record<string, unknown> : undefined;
   return {
     summary: str(obj.summary) ?? '（模型没有给 summary）',
+    listenerSummary: str(obj.listenerSummary),
+    feeling: str(obj.feeling),
+    imagery: str(obj.imagery),
+    body: str(obj.body),
+    arc: str(obj.arc),
     isMusic: obj.isMusic === true,
     musicConfidence: clamp(num(obj.musicConfidence) ?? 0, 0, 1),
     tempoBpm: num(obj.tempoBpm),
@@ -149,66 +198,112 @@ export function parseAnalysis(text: string): MusicAnalysis {
       present: lyricsObj.present === true,
       text: str(lyricsObj.text) ?? '',
       confidence: clamp(num(lyricsObj.confidence) ?? 0, 0, 1),
+      source: 'asr',
+      complete: false,
     } : undefined,
     uncertain: Array.isArray(obj.uncertain) ? obj.uncertain.filter((x): x is string => typeof x === 'string').slice(0, 10) : [],
-    raw: cfgRaw(obj),
+    raw: typeof obj.raw === 'string' ? obj.raw : undefined,
   };
 }
 
-function cfgRaw(obj: Record<string, unknown>): string | undefined {
-  const unknown = obj as { raw?: unknown };
-  return typeof unknown.raw === 'string' ? unknown.raw : undefined;
-}
+const lyricsSourceLabel = (s?: LyricsSource): string => {
+  if (s === 'lrclib') return 'LRCLIB（完整可信）';
+  if (s === 'metadata') return '播放器信息（可信）';
+  return '听写（可能听错）';
+};
 
-/** 一段分析的紧凑中文描述，用于实时事件。 */
-export function formatAnalysis(a: MusicAnalysis): string {
-  const lines: string[] = [];
-  lines.push('音乐分析：' + a.summary);
+function technicalLines(a: MusicAnalysis): string[] {
   const facts: string[] = [];
-  if (a.tempoBpm) facts.push(`${Math.round(a.tempoBpm)} BPM`);
-  if (a.meter) facts.push(a.meter);
-  if (a.key || a.mode) facts.push([a.key, a.mode].filter(Boolean).join(' '));
+  if (a.tempoBpm) facts.push(`速度：${Math.round(a.tempoBpm)} BPM${a.meter ? ' / ' + a.meter : ''}`);
+  if (a.key || a.mode) facts.push('调式：' + [a.key, a.mode].filter(Boolean).join(' '));
   if (a.instruments.length) facts.push('乐器：' + a.instruments.map((i) => `${i.name}(${i.confidence.toFixed(2)})`).join('、'));
   if (a.melody) facts.push('旋律：' + a.melody);
   if (a.rhythm) facts.push('节奏：' + a.rhythm);
   if (a.dynamics) facts.push('力度：' + a.dynamics);
   if (a.texture) facts.push('织体：' + a.texture);
   if (a.structure) facts.push('结构：' + a.structure);
-  if (a.mood) facts.push(`情绪：${a.mood.quality}（valence ${a.mood.valence.toFixed(2)}，arousal ${a.mood.arousal.toFixed(2)}，置信 ${a.mood.confidence.toFixed(2)}）`);
-  if (a.lyrics?.present) facts.push(`听到的歌词：${a.lyrics.text}（置信 ${a.lyrics.confidence.toFixed(2)}）`);
   if (a.uncertain?.length) facts.push('不确定：' + a.uncertain.join('；'));
-  if (facts.length) lines.push(facts.join('\n'));
+  return facts;
+}
+
+/** 一个窗口的正文：先感受，后内部参考。 */
+export function formatAnalysis(a: MusicAnalysis, context?: ListeningContext): string {
+  const lines: string[] = [];
+  if (context?.track) lines.push(`曲目：${context.track}${context.artist ? ' — ' + context.artist : ''}`);
+  lines.push('【这段的感受】');
+  lines.push(a.listenerSummary || a.summary);
+  const feeling = a.feeling || a.mood?.quality;
+  if (feeling) lines.push('情绪：' + feeling);
+  if (a.imagery) lines.push('画面：' + a.imagery);
+  if (a.body) lines.push('身体：' + a.body);
+  if (a.arc) lines.push('走向：' + a.arc);
+  if (a.lyrics?.present && a.lyrics.text) {
+    lines.push(`歌词（来源：${lyricsSourceLabel(a.lyrics.source)}）：${a.lyrics.text}`);
+  }
+  const tech = technicalLines(a);
+  if (tech.length) {
+    lines.push('');
+    lines.push('—— 内部参考（给 bot 理解音乐用，不要照念给老大）——');
+    lines.push(tech.join('\n'));
+  }
   return lines.join('\n');
 }
 
-/** 一段结束时的汇总，供 bot 做总结。 */
-export function combineAnalyses(analyses: readonly MusicAnalysis[], durationMs: number, windowSec: number): string {
+/** 一段结束时的正文：整体感受 + 歌词 + 内部参考。 */
+export function combineAnalyses(
+  analyses: readonly MusicAnalysis[],
+  durationMs: number,
+  windowSec: number,
+  context?: ListeningContext,
+): string {
   if (!analyses.length) {
-    return `一段音乐结束了（约 ${Math.round(durationMs / 1000)} 秒），但这次没有拿到分析结果（可能是 Key 没配、接口失败或音频太短）。`;
+    return `这一段听了约 ${Math.round(durationMs / 1000)} 秒，但这次没有拿到分析结果（可能是 Key 没配、接口失败或音频太短）。`;
   }
-  const instruments = new Map<string, number>();
-  for (const a of analyses) {
-    for (const i of a.instruments) instruments.set(i.name, Math.max(instruments.get(i.name) ?? 0, i.confidence));
-  }
+  const listeners = [...new Set(analyses.map((a) => a.listenerSummary).filter((x): x is string => !!x))];
+  const feelings = [...new Set(analyses.map((a) => a.feeling ?? a.mood?.quality).filter((x): x is string => !!x))];
+  const images = [...new Set(analyses.map((a) => a.imagery).filter((x): x is string => !!x))];
+  const bodies = [...new Set(analyses.map((a) => a.body).filter((x): x is string => !!x))];
+  const arcs = [...new Set(analyses.map((a) => a.arc).filter((x): x is string => !!x))];
+  const summaries = [...new Set(analyses.map((a) => a.summary).filter(Boolean))];
+  const lyrics = [...new Set(analyses.map((a) => a.lyrics).filter((l): l is NonNullable<MusicAnalysis['lyrics']> => !!l?.present && !!l.text))];
+  const uncertain = [...new Set(analyses.flatMap((a) => a.uncertain ?? []))];
   const bpm = analyses.map((a) => a.tempoBpm).filter((x): x is number => typeof x === 'number');
   const keys = [...new Set(analyses.flatMap((a) => [a.key, a.mode].filter((x): x is string => !!x)))];
-  const qualities = analyses.map((a) => a.mood?.quality).filter((x): x is string => !!x);
-  const lyrics = analyses.map((a) => a.lyrics).filter((l): l is NonNullable<MusicAnalysis['lyrics']> => !!l?.present && !!l.text);
-  const uncertain = [...new Set(analyses.flatMap((a) => a.uncertain ?? []))];
-  const summary = analyses.map((a) => a.summary).filter(Boolean).slice(-4).join(' / ');
+  const instruments = new Map<string, number>();
+  for (const a of analyses) for (const i of a.instruments) instruments.set(i.name, Math.max(instruments.get(i.name) ?? 0, i.confidence));
 
-  const lines = [
-    `一段音乐结束了，约 ${Math.round(durationMs / 1000)} 秒，共分析 ${analyses.length} 个窗口（每窗约 ${windowSec} 秒）。`,
-    '整段听感：' + summary,
-  ];
-  const facts: string[] = [];
-  if (bpm.length) facts.push('速度：' + `${Math.round(Math.min(...bpm))}–${Math.round(Math.max(...bpm))} BPM`);
-  if (keys.length) facts.push('调式线索：' + keys.join('、'));
-  if (instruments.size) facts.push('乐器：' + [...instruments.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n}(${c.toFixed(2)})`).join('、'));
-  if (qualities.length) facts.push('情绪质地：' + [...new Set(qualities)].slice(-3).join(' / '));
-  if (lyrics.length) facts.push('听到的歌词：' + [...new Set(lyrics.map((l) => l.text))].slice(0, 3).join(' / '));
-  if (uncertain.length) facts.push('不确定：' + uncertain.slice(0, 6).join('；'));
-  if (facts.length) lines.push(facts.join('\n'));
-  lines.push('按这个框架说感受：先说听到什么，再说像什么；不确定的地方留余地，不要硬报歌名或乐器。');
+  const lines: string[] = [`【一起听完这一段】约 ${Math.round(durationMs / 1000)} 秒，共 ${analyses.length} 个窗口（每窗约 ${windowSec} 秒）。`];
+  if (context?.track) lines.push(`曲目：${context.track}${context.artist ? ' — ' + context.artist : ''}（来自播放器媒体信息）`);
+  lines.push('');
+  lines.push('【整体感受】');
+  if (listeners.length) lines.push(listeners.slice(-3).join('\n'));
+  else lines.push(summaries.slice(-3).join(' / '));
+  if (feelings.length) lines.push('情绪：' + [...new Set(feelings)].slice(-3).join(' / '));
+  if (images.length) lines.push('画面：' + [...new Set(images)].slice(-2).join(' / '));
+  if (bodies.length) lines.push('身体：' + [...new Set(bodies)].slice(-2).join(' / '));
+  if (arcs.length) lines.push('走向：' + arcs.slice(-1)[0]);
+
+  if (context?.lyrics) {
+    lines.push('');
+    lines.push('歌词（来源：' + lyricsSourceLabel(context.lyricsSource ?? 'lrclib') + '）：');
+    lines.push(context.lyrics);
+  } else if (lyrics.length) {
+    lines.push('');
+    lines.push('歌词（来源：听写，可能听错）：');
+    lines.push([...new Set(lyrics.map((l) => l.text))].slice(0, 4).join('\n'));
+  }
+
+  const tech: string[] = [];
+  if (bpm.length) tech.push(`速度：${Math.round(Math.min(...bpm))}–${Math.round(Math.max(...bpm))} BPM`);
+  if (keys.length) tech.push('调式线索：' + keys.join('、'));
+  if (instruments.size) tech.push('乐器：' + [...instruments.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n}(${c.toFixed(2)})`).join('、'));
+  if (uncertain.length) tech.push('不确定：' + uncertain.slice(0, 6).join('；'));
+  if (tech.length) {
+    lines.push('');
+    lines.push('—— 内部参考（给 bot 理解音乐用，不要照念给老大；不要报参数）——');
+    lines.push(tech.join('\n'));
+  }
+  lines.push('');
+  lines.push('用你刚才听的时候的感受说，像一个人，不要像分析报告。');
   return lines.join('\n');
 }

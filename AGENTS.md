@@ -8,9 +8,10 @@ checkout; `<dir>` is this package's directory.
 - [x] **Contract version**: `cortico.api` = world 6.
 - [x] **Self-description**: after changing tools, event types or the env prompt, run `pnpm describe:extension <dir>`.
 - [x] **Tags**: `voice`, `requires-key`, `sensitive-data`, `experimental` — all in TAGS.md.
-- [x] **CHANGELOG.md** has a `## 0.1.0` section.
-- [x] **`os`**: `["win32"]` (WASAPI only).
+- [x] **CHANGELOG.md** has a `## 0.2.0` section.
+- [x] **`os`**: `["win32"]` (WASAPI + Windows media session only).
 - [x] **`pnpm check:extension <dir>`** passes.
+- [x] **PROJECT.md** carries the project/market introduction and component map.
 - [ ] **Requests to the maintainers** (tag changes, certification, replacement, appeals): issues in
   [Pal-AI-Lab/cortico-extensions](https://github.com/Pal-AI-Lab/cortico-extensions) with the plain-text
   format from `check:extension`.

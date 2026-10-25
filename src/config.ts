@@ -19,6 +19,10 @@ export interface MusicConfigSection {
   maxCallsPerMinute: number;
   /** 换歌时没有媒体信息，是否截一张屏幕给 bot 看播放器界面。 */
   screenFallback: boolean;
+  /** 是否从 Windows 媒体会话读桌面播放器的曲目/歌手（浏览器不走这条）。 */
+  readPlayerMeta: boolean;
+  /** 有准确曲目信息时，是否去 LRCLIB 查完整歌词。 */
+  lookupLyrics: boolean;
   /** 额外的乐器提示（自由文本，会拼进分析提示词）。 */
   instrumentHints: string;
   /** 在运行日志里记录每段分析的调试信息。 */
@@ -35,6 +39,8 @@ export const MUSIC_DEFAULTS: MusicConfigSection = {
   windowSec: 30,
   maxCallsPerMinute: 4,
   screenFallback: false,
+  readPlayerMeta: true,
+  lookupLyrics: true,
   instrumentHints: '',
   debug: false,
 };
@@ -99,6 +105,18 @@ export const MUSIC_CONFIG_GROUP: ConfigGroup = {
         type: 'boolean',
         title: '截屏识别播放器',
         description: '拿不到媒体信息时截一张主屏给 bot 看；会包含屏幕内容。',
+        'x-hot': true,
+      },
+      'worlds.music.readPlayerMeta': {
+        type: 'boolean',
+        title: '读播放器曲目信息',
+        description: '从 Windows 媒体会话读桌面播放器的歌名/歌手；浏览器不读，按音频识别。',
+        'x-hot': true,
+      },
+      'worlds.music.lookupLyrics': {
+        type: 'boolean',
+        title: '查完整歌词',
+        description: '有准确曲目信息时从 LRCLIB 查完整歌词；查不到就只听写，保守处理。',
         'x-hot': true,
       },
       'worlds.music.instrumentHints': {
