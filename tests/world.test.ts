@@ -178,6 +178,26 @@ describe('Music World', () => {
     await world.stop();
   });
 
+  it('keeps a player track even when the first window says not music', async () => {
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+      metadataReader: async () => meta,
+      analyze: async () => ({ analysis: { ...analysis, isMusic: false, musicConfidence: 0.95, summary: '前奏像说话' } }),
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+    capture.feed(tone(1.2));
+    await sleep(40);
+    capture.feed(silence(3));
+    await sleep(160);
+    const types = host.events.map((e) => e.type);
+    expect(types).toContain('music.started');
+    expect(types).toContain('music.ended');
+    expect(host.events.find((e) => e.type === 'music.started')!.text).toContain('记忆点');
+    await world.stop();
+  });
+
   it('drops audio that is not music', async () => {
     const { world, capture } = makeWorld({
       analyze: async () => ({ analysis: { ...analysis, isMusic: false, musicConfidence: 0.95, summary: '播客旁白' } }),
