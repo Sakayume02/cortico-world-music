@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyMediaApp, playerName, type PlayerMeta } from '../src/metadata.ts';
+import { classifyMediaApp, parsePlayerWindowTitle, playerName, type PlayerMeta } from '../src/metadata.ts';
 import { lookupLyrics, stripSyncedLyrics } from '../src/lyrics.ts';
 
 const meta: PlayerMeta = {
@@ -24,6 +24,20 @@ describe('metadata', () => {
     expect(classifyMediaApp('msedge.exe')).toBe('browser');
     expect(classifyMediaApp('explorer.exe')).toBe('other');
     expect(playerName('CloudMusic.exe')).toBe('网易云音乐');
+  });
+
+  it('parses player window titles as a fallback', () => {
+    const netease = parsePlayerWindowTitle('cloudmusic.exe', '凉州曲_凉州曲 - 燕云十六声/Yida');
+    expect(netease?.title).toBe('凉州曲_凉州曲');
+    expect(netease?.artist).toBe('燕云十六声/Yida');
+
+    const withSuffix = parsePlayerWindowTitle('QQMusic.exe', '记忆点 - 陈卓璇 - QQ音乐');
+    expect(withSuffix?.title).toBe('记忆点');
+    expect(withSuffix?.artist).toBe('陈卓璇');
+
+    expect(parsePlayerWindowTitle('cloudmusic.exe', '桌面歌词')).toBeNull();
+    expect(parsePlayerWindowTitle('cloudmusic.exe', '网易云音乐')).toBeNull();
+    expect(parsePlayerWindowTitle('chrome.exe', 'Song - Artist - YouTube')).toBeNull();
   });
 });
 

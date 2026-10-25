@@ -263,6 +263,7 @@ describe('Music World', () => {
     capture.feed(silence(3));
     await sleep(180);
     expect(host.events.some((e) => e.type === 'music.ended')).toBe(true);
+    expect(host.events.some((e) => e.type === 'music.ending')).toBe(true);
 
     capture.feed(tone(1.2));
     await sleep(220);

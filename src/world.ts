@@ -99,6 +99,8 @@ interface LastEnded {
   cursor?: number;
   sceneCursors: number[];
   at: number;
+  /** false = 最后一窗还在补，true = 最终完整总结。 */
+  final: boolean;
 }
 
 const EMPTY_INFO: ListeningInfo = { context: {} };
@@ -124,10 +126,14 @@ export class MusicWorld implements World {
   private lastTrack = '';
   private segment?: ActiveSegment;
   private lastEnded?: LastEnded;
+  private lastEnding?: LastEnded;
   private previousEndPromise?: Promise<void>;
   private callTimes: number[] = [];
   private silenceTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private metadataTimer: ReturnType<typeof setInterval> | null = null;
+  private pollInFlight = false;
+  private polledTrackKey = '';
   private listeningStartedAt = 0;
   private logger: (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => void;
 
@@ -188,6 +194,9 @@ export class MusicWorld implements World {
     // 默认待命：不采集，等用户明确提出听音乐，bot 再调 music_watch start。
     this.running = false;
     this.lastError = '';
+    this.lastEnded = undefined;
+    this.lastEnding = undefined;
+    this.previousEndPromise = undefined;
     await this.pushState('待命：还没有开始听。等用户明确说想一起听音乐（比如“听首歌”“一起听”）时，再调用 music_watch start；不要自己开始。');
   }
 
@@ -198,6 +207,7 @@ export class MusicWorld implements World {
     this.segment = undefined;
     this.lastTrack = '';
     this.lastEnded = undefined;
+    this.lastEnding = undefined;
     this.previousEndPromise = undefined;
   }
 
@@ -211,6 +221,7 @@ export class MusicWorld implements World {
       meta = null;
     }
     if (!meta) return EMPTY_INFO;
+    this.polledTrackKey = `${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
     let lyrics: LyricsResult | null = null;
     if (cfg.lookupLyrics) {
       try {
@@ -248,7 +259,9 @@ export class MusicWorld implements World {
     this.running = true;
     this.lastError = '';
     this.lastEnded = undefined;
+    this.lastEnding = undefined;
     this.previousEndPromise = undefined;
+    this.polledTrackKey = '';
     this.stopTimer();
     this.silenceTimer = setInterval(() => this.segmenter?.tick(), 500);
     this.silenceTimer.unref?.();
@@ -256,6 +269,43 @@ export class MusicWorld implements World {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => { void this.pushHeartbeat(); }, 120_000);
     this.heartbeatTimer.unref?.();
+    this.stopMetadataPoll();
+    if (this.opts.cfg.readPlayerMeta) {
+      this.metadataTimer = setInterval(() => { void this.pollPlayerTrack(); }, 3000);
+      this.metadataTimer.unref?.();
+    }
+  }
+
+  /** 播放器元数据轮询：没有静音间隙的切歌也要能被发现。 */
+  private async pollPlayerTrack(): Promise<void> {
+    if (!this.running || this.pollInFlight) return;
+    this.pollInFlight = true;
+    try {
+      const meta = this.opts.metadataReader ? await this.opts.metadataReader() : await readPlayerMetadata();
+      if (!meta) return;
+      const key = `${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
+      if (!this.polledTrackKey) {
+        this.polledTrackKey = key;
+        return;
+      }
+      if (key === this.polledTrackKey) return;
+      this.polledTrackKey = key;
+      if (this.segmenter?.hasActiveSegment) {
+        this.logger('debug', '播放器曲目变了，强制切段', { to: `${meta.artist ?? ''} ${meta.title}`.trim() });
+        this.segmenter.flush();
+      }
+    } catch (e) {
+      this.logger('debug', '播放器元数据轮询失败', { error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      this.pollInFlight = false;
+    }
+  }
+
+  private stopMetadataPoll(): void {
+    if (this.metadataTimer) {
+      clearInterval(this.metadataTimer);
+      this.metadataTimer = null;
+    }
   }
 
   /** 每两分钟给 bot 一条【在听】状态，让它有机会冒一个很小的气泡。 */
@@ -284,6 +334,7 @@ export class MusicWorld implements World {
     this.running = false;
     this.stopTimer();
     this.stopHeartbeat();
+    this.stopMetadataPoll();
     this.segmenter = null;
     this.capture?.stop();
     this.capture = null;
@@ -296,16 +347,22 @@ export class MusicWorld implements World {
 
     const previous = this.previousEndPromise;
     this.previousEndPromise = undefined;
-    if (previous) await previous;
+    // 换歌不能等完整总结太久；最后一窗没回来就先用 ending 版收尾，ended 再补最终版。
+    if (previous) await Promise.race([previous, new Promise((resolve) => setTimeout(resolve, 8000))]);
 
     const info = await (segment.infoPromise ?? Promise.resolve(EMPTY_INFO));
     if (this.segment !== segment || segment.dropped || !this.running) return;
 
-    const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000 ? this.lastEnded : undefined;
+    const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000
+      ? this.lastEnded
+      : this.lastEnding && Date.now() - this.lastEnding.at < 15_000
+        ? this.lastEnding
+        : undefined;
     if (prev && info.context.track) {
       await this.withdrawPrevious(prev);
       await this.pushSwitch(prev, info, segment);
       this.lastEnded = undefined;
+      this.lastEnding = undefined;
     } else if (info.context.track) {
       await this.pushStarted(segment, info);
     } else {
@@ -388,7 +445,7 @@ export class MusicWorld implements World {
     const lines = [
       '【换歌】',
       prev.track ? `上一首：${prev.track}` : '上一首：未知',
-      '上一首完整总结：',
+      prev.final ? '上一首完整总结：' : '上一首总结（最后一窗还在补，music.ended 会补最终版）：',
       prev.text,
       '',
       newLine,
@@ -430,9 +487,9 @@ export class MusicWorld implements World {
 
     segment.windows++;
     const wav = encodeWav(window.pcm);
-    const info = await (segment.infoPromise ?? Promise.resolve(EMPTY_INFO));
     const task = (async () => {
       try {
+        const info = await (segment.infoPromise ?? Promise.resolve(EMPTY_INFO));
         const outcome = this.opts.analyze
           ? await this.opts.analyze(wav, this.opts.cfg, key, this.opts.cfg.windowSec, info.context)
           : await analyzeWithDashscope({
@@ -471,11 +528,16 @@ export class MusicWorld implements World {
           }
           segment.confirmed = true;
           if (!segment.startedPushed) {
-            const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000 ? this.lastEnded : undefined;
+            const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000
+              ? this.lastEnded
+              : this.lastEnding && Date.now() - this.lastEnding.at < 15_000
+                ? this.lastEnding
+                : undefined;
             if (prev) {
               await this.withdrawPrevious(prev);
               await this.pushSwitch(prev, info, segment);
               this.lastEnded = undefined;
+              this.lastEnding = undefined;
             } else {
               await this.pushStarted(segment, info);
             }
@@ -514,10 +576,38 @@ export class MusicWorld implements World {
       return;
     }
     const info = await (segment.infoPromise ?? Promise.resolve(EMPTY_INFO));
-    // 等已发出的窗口分析回来；最多等 65 秒，避免一段永远不结束。
+    // 先立刻给一版（最后一窗可能还在分析），让 bot 马上开始收尾；最终版等各窗口回来。
+    if (segment.pending.length > 0) {
+      const partial = combineAnalyses(segment.analyses, end.durationMs, this.opts.cfg.windowSec, info.context);
+      this.lastEnding = {
+        text: partial,
+        track: info.context.track,
+        artist: info.context.artist,
+        sceneCursors: [...segment.sceneCursors],
+        at: Date.now(),
+        final: false,
+      };
+      await this.pushEvent(
+        'music.ending',
+        `【听完了】最后一窗还在补分析。先给你这一版；music.ended 是最终完整版，不要重复已经说过的。\n\n${partial}`,
+        {
+          origin: 'external',
+          meta: {
+            endedAt: end.endedAt,
+            durationMs: end.durationMs,
+            track: info.context.track,
+            artist: info.context.artist,
+            album: info.context.album,
+            partial: true,
+          },
+        },
+        'flush',
+      );
+    }
+    // 等已发出的窗口分析回来；最多等 40 秒，避免一段永远不结束。
     await Promise.race([
       Promise.allSettled(segment.pending),
-      new Promise((resolve) => setTimeout(resolve, 65_000)),
+      new Promise((resolve) => setTimeout(resolve, 40_000)),
     ]);
     let text = combineAnalyses(segment.analyses, end.durationMs, this.opts.cfg.windowSec, info.context);
     if (segment.error) text += `\n（这次有分析失败：${segment.error}）`;
@@ -543,9 +633,12 @@ export class MusicWorld implements World {
       cursor: saved?.cursor,
       sceneCursors: [...segment.sceneCursors],
       at: Date.now(),
+      final: true,
     };
+    this.lastEnding = undefined;
     if (this.opts.cfg.afterSong === 'stop') {
       this.lastEnded = undefined;
+      this.lastEnding = undefined;
       this.stopCapture();
       this.lastTrack = '';
       await this.pushState('按设置：听完这首就停，已经停止。想继续再让我听。');

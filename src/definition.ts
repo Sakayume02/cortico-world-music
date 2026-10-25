@@ -43,8 +43,13 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
         trigger: 'debounce',
       },
       {
+        type: 'music.ending',
+        description: { zh: '一段结束，最后一窗还在补分析：先给一版让 bot 马上开始收尾；music.ended 是最终完整版。', en: 'The segment ended but the last window is still analyzing: an early summary so the bot can start right away; music.ended is final.' },
+        trigger: 'flush',
+      },
+      {
         type: 'music.ended',
-        description: { zh: '一段结束或暂停；正文是整体感受、可信歌词与内部参考，适合让 bot 用人的方式总结。', en: 'A segment ended or paused; the text is the overall feeling, trusted lyrics and an internal reference for the bot.' },
+        description: { zh: '一段结束或暂停；正文是整体感受、歌曲背景、联想、可信歌词与内部参考，适合让 bot 用人的方式总结。', en: 'A segment ended or paused; the text is the overall feeling, background, references, trusted lyrics and an internal reference for the bot.' },
         trigger: 'flush',
       },
       {
