@@ -66,7 +66,7 @@ export const MUSIC_CONFIG_GROUP: ConfigGroup = {
       'worlds.music.afterSong': {
         type: 'string',
         title: '听完一首后',
-        description: 'continue = 继续听下一首；stop = 这首结束就停止（总结后自动停）。',
+        description: 'continue = 一直听，直到你说停；stop = 这首结束、总结完就自动停。',
         enum: ['continue', 'stop'],
         'x-hot': true,
       },

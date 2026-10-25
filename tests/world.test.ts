@@ -246,6 +246,34 @@ describe('Music World', () => {
     expect(keyState.hasKey).toBe(true);
   });
 
+  it('switches songs with the previous complete summary and announces the new track', async () => {
+    let metaCall = 0;
+    const first: PlayerMeta = { ...meta, title: '第一首' };
+    const second: PlayerMeta = { ...meta, title: '第二首' };
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, lookupLyrics: false, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+      metadataReader: async () => (metaCall++ === 0 ? first : second),
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+
+    capture.feed(tone(1.2));
+    await sleep(40);
+    capture.feed(silence(3));
+    await sleep(180);
+    expect(host.events.some((e) => e.type === 'music.ended')).toBe(true);
+
+    capture.feed(tone(1.2));
+    await sleep(220);
+    const sw = host.events.find((e) => e.type === 'music.switch');
+    expect(sw).toBeDefined();
+    expect(sw!.text).toContain('第一首');
+    expect(sw!.text).toContain('第二首');
+    expect(host.pushOpts[host.events.indexOf(sw!)]?.trigger).toBe('interrupt');
+    await world.stop();
+  });
+
   it('stops after one song when afterSong is stop', async () => {
     const { world, capture } = makeWorld({
       cfg: { ...MUSIC_DEFAULTS, afterSong: 'stop', windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },

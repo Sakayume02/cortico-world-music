@@ -6,7 +6,7 @@
  */
 import { fileURLToPath } from 'node:url';
 import type {
-  BlobInput, ToolDef, TriggerMode, World, WorldHost, WorldWebUiDecl,
+  BlobInput, EventEnvelope, ToolDef, TriggerMode, World, WorldHost, WorldWebUiDecl,
 } from 'cortico/core/types.ts';
 import { nowIso } from 'cortico/core/util.ts';
 import { MUSIC_CONFIG_GROUP, MUSIC_DEFAULTS, type MusicConfigSection } from './config.ts';
@@ -86,8 +86,19 @@ interface ActiveSegment {
   keyWarned: boolean;
   confirmed?: boolean;
   dropped?: boolean;
+  startedPushed?: boolean;
+  sceneCursors: number[];
   error?: string;
   infoPromise?: Promise<ListeningInfo>;
+}
+
+interface LastEnded {
+  text: string;
+  track?: string;
+  artist?: string;
+  cursor?: number;
+  sceneCursors: number[];
+  at: number;
 }
 
 const EMPTY_INFO: ListeningInfo = { context: {} };
@@ -112,6 +123,8 @@ export class MusicWorld implements World {
   private lastAnalysis?: MusicAnalysis;
   private lastTrack = '';
   private segment?: ActiveSegment;
+  private lastEnded?: LastEnded;
+  private previousEndPromise?: Promise<void>;
   private callTimes: number[] = [];
   private silenceTimer: ReturnType<typeof setInterval> | null = null;
   private logger: (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => void;
@@ -182,6 +195,8 @@ export class MusicWorld implements World {
     this.segmenter = null;
     this.segment = undefined;
     this.lastTrack = '';
+    this.lastEnded = undefined;
+    this.previousEndPromise = undefined;
   }
 
   private async loadInfo(): Promise<ListeningInfo> {
@@ -230,6 +245,8 @@ export class MusicWorld implements World {
     this.segmenter = segmenter;
     this.running = true;
     this.lastError = '';
+    this.lastEnded = undefined;
+    this.previousEndPromise = undefined;
     this.stopTimer();
     this.silenceTimer = setInterval(() => this.segmenter?.tick(), 500);
     this.silenceTimer.unref?.();
@@ -251,10 +268,124 @@ export class MusicWorld implements World {
   }
 
   private async onSegmentStart(startedAt: number): Promise<void> {
-    const segment: ActiveSegment = { startedAt, analyses: [], pending: [], windows: 0, keyWarned: false };
+    const segment: ActiveSegment = { startedAt, analyses: [], pending: [], windows: 0, keyWarned: false, sceneCursors: [] };
     segment.infoPromise = this.loadInfo().catch(() => EMPTY_INFO);
     this.segment = segment;
-    this.logger('debug', '听到声音，等待第一个窗口确认是不是音乐；同时读播放器信息和歌词');
+
+    const previous = this.previousEndPromise;
+    this.previousEndPromise = undefined;
+    if (previous) await previous;
+
+    const info = await (segment.infoPromise ?? Promise.resolve(EMPTY_INFO));
+    if (this.segment !== segment || segment.dropped || !this.running) return;
+
+    const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000 ? this.lastEnded : undefined;
+    if (prev && info.context.track) {
+      await this.withdrawPrevious(prev);
+      await this.pushSwitch(prev, info, segment);
+      this.lastEnded = undefined;
+    } else if (info.context.track) {
+      await this.pushStarted(segment, info);
+    } else {
+      this.logger('debug', '听到声音，等待第一个窗口确认是不是音乐；没有播放器曲目信息');
+    }
+  }
+
+  /** 换歌时把上一首还没投递的零散总结撤回，只留下面 switch 里的完整总结。 */
+  private async withdrawPrevious(prev: LastEnded): Promise<void> {
+    const host = this.host;
+    if (!host?.withdrawPending) return;
+    if (prev.cursor) {
+      try { await host.withdrawPending(prev.cursor); } catch {}
+    }
+    for (const cursor of prev.sceneCursors) {
+      try { await host.withdrawPending(cursor); } catch {}
+    }
+  }
+
+  /** 曲目已知时，一开始就报幕（不等第一个 30 秒窗口）。 */
+  private async pushStarted(segment: ActiveSegment, info: ListeningInfo): Promise<void> {
+    const track = info.context.track;
+    const artist = info.context.artist;
+    const trackLine = track
+      ? `开始一起听：${track}${artist ? ' — ' + artist : ''}（来自播放器媒体信息）。`
+      : '开始听到一段音乐（系统声音），歌名还没认出来。';
+    const announce = track
+      ? `先用一句话报个幕：“是${artist ? artist + ' 的 ' : ''}《${track}》呀，我来听一下。” 然后跟着听。`
+      : '先用一句话报个幕：“新的一首，我来听一下；歌名还没认出来。” 不要硬报歌名。';
+    const lines = [trackLine, announce, '跟着听；想动就动，用现有动作；不想动就安静听。听歌时别打盹/睡觉，专注一点。结束/暂停时再说感受。'];
+
+    let screenshot: BlobInput | undefined;
+    let note = '';
+    if (!track && this.opts.cfg.screenFallback) {
+      const acceptsImage = this.host?.modelFacts.accepts('image/png') ?? false;
+      if (!acceptsImage) {
+        note = '（当前模型不接受图片，无法用截图识别播放器。）';
+      } else {
+        try {
+          const shot = await (this.opts.screenCapture ?? (() => capturePrimaryScreen(this.opts.dataDir)))();
+          if (shot) screenshot = { bytes: shot.bytes, mime: shot.mime, name: shot.name, fallbackText: '确认是音乐时的主屏截图，用来识别播放器/歌名' };
+          else note = '（截屏失败，拿不到播放器画面。）';
+        } catch {
+          note = '（截屏失败，拿不到播放器画面。）';
+        }
+      }
+    }
+    if (screenshot) lines.push('附一张当前屏幕，供你识别播放器/歌名；识别不出就只说听感。');
+    if (note) lines.push(note);
+    if (info.lyrics) lines.push('已经拿到完整可信歌词（LRCLIB），歌词不用你听写；引用只引短句。');
+
+    this.lastTrack = [track, artist].filter(Boolean).join(' — ');
+    segment.startedPushed = true;
+    await this.pushEvent('music.started', lines.join('\n'), {
+      origin: 'external',
+      meta: {
+        startedAt: segment.startedAt,
+        mode: this.opts.cfg.mode,
+        backend: this.opts.cfg.backend,
+        model: this.opts.cfg.model,
+        track,
+        artist,
+        album: info.context.album,
+        lyricsSource: info.lyrics ? 'lrclib' : undefined,
+      },
+      blobs: screenshot ? [screenshot] : undefined,
+    }, 'flush');
+  }
+
+  /** 换歌：上一首完整总结 + 新歌报幕，用 interrupt 把上一首没说完的话停掉。 */
+  private async pushSwitch(prev: LastEnded, info: ListeningInfo, segment: ActiveSegment): Promise<void> {
+    const track = info.context.track;
+    const artist = info.context.artist;
+    const newLine = track
+      ? `现在开始：${track}${artist ? ' — ' + artist : ''}（来自播放器媒体信息）。`
+      : '现在开始：新的一首（来源未知，歌名还没认出来）。';
+    const announce = track
+      ? `“是${artist ? artist + ' 的 ' : ''}《${track}》呀，我来听一下。”`
+      : '“新的一首，我来听一下；歌名还没认出来。”';
+    const lines = [
+      '【换歌】',
+      prev.track ? `上一首：${prev.track}` : '上一首：未知',
+      '上一首完整总结：',
+      prev.text,
+      '',
+      newLine,
+      '先用一两句话把上一首收个尾（只取感受/歌词/主旨，不要念内部参考）；然后报新歌：' + announce,
+      '不要继续上一首的细节；如果上一首已经收过尾，就只报新歌。',
+    ];
+    this.lastTrack = [track, artist].filter(Boolean).join(' — ');
+    segment.startedPushed = true;
+    await this.pushEvent('music.switch', lines.join('\n'), {
+      origin: 'external',
+      meta: {
+        switchedAt: segment.startedAt,
+        previousTrack: prev.track,
+        track,
+        artist,
+        album: info.context.album,
+        model: this.opts.cfg.model,
+      },
+    }, 'interrupt');
   }
 
   private async onWindow(window: WindowChunk): Promise<void> {
@@ -317,57 +448,26 @@ export class MusicWorld implements World {
             return;
           }
           segment.confirmed = true;
-          const trackLine = info.context.track
-            ? `开始一起听：${info.context.track}${info.context.artist ? ' — ' + info.context.artist : ''}（来自播放器媒体信息）。`
-            : '开始听到一段音乐（系统声音）。';
-          const lines = [trackLine, '先别急着报参数，跟着听；想动就动，用你现有的动作；不想动就安静听。听歌时别打盹/睡觉，专注一点。结束/暂停时再说你听到了什么、想到了什么。'];
-
-          let screenshot: BlobInput | undefined;
-          let note = '';
-          // 播放器已经给了曲目就不截屏；浏览器/来源未知时才用屏幕兜底。
-          if (!info.context.track && this.opts.cfg.screenFallback) {
-            const acceptsImage = this.host?.modelFacts.accepts('image/png') ?? false;
-            if (!acceptsImage) {
-              note = '（当前模型不接受图片，无法用截图识别播放器。）';
+          if (!segment.startedPushed) {
+            const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000 ? this.lastEnded : undefined;
+            if (prev) {
+              await this.withdrawPrevious(prev);
+              await this.pushSwitch(prev, info, segment);
+              this.lastEnded = undefined;
             } else {
-              try {
-                const shot = await (this.opts.screenCapture ?? (() => capturePrimaryScreen(this.opts.dataDir)))();
-                if (shot) screenshot = { bytes: shot.bytes, mime: shot.mime, name: shot.name, fallbackText: '确认是音乐时的主屏截图，用来识别播放器/歌名' };
-                else note = '（截屏失败，拿不到播放器画面。）';
-              } catch {
-                note = '（截屏失败，拿不到播放器画面。）';
-              }
+              await this.pushStarted(segment, info);
             }
           }
-          if (screenshot) lines.push('附一张当前屏幕，供你识别播放器/歌名；识别不出就只说听感。');
-          if (note) lines.push(note);
-          if (info.lyrics) lines.push('已经拿到完整可信歌词（LRCLIB），歌词不用你听写；先用感受听，引用只引短句。');
-
-          this.lastTrack = [info.context.track, info.context.artist].filter(Boolean).join(' — ');
-          await this.pushEvent('music.started', lines.join('\n'), {
-            origin: 'external',
-            meta: {
-              startedAt: segment.startedAt,
-              mode: this.opts.cfg.mode,
-              backend: this.opts.cfg.backend,
-              model: this.opts.cfg.model,
-              musicConfidence: outcome.analysis.musicConfidence,
-              track: info.context.track,
-              artist: info.context.artist,
-              album: info.context.album,
-              lyricsSource: info.lyrics ? 'lrclib' : undefined,
-            },
-            blobs: screenshot ? [screenshot] : undefined,
-          }, 'flush');
         }
         segment.analyses.push(outcome.analysis);
         this.lastAnalysis = outcome.analysis;
         this.logger('debug', '窗口分析完成', { summary: outcome.analysis.summary, title: info.context.track });
         if (this.opts.cfg.mode === 'live' || this.opts.cfg.mode === 'both') {
-          await this.pushEvent('music.scene', formatAnalysis(outcome.analysis, info.context), {
+          const scene = await this.pushEvent('music.scene', formatAnalysis(outcome.analysis, info.context), {
             origin: 'external',
             meta: { windowStartedAt: window.startedAt, durationMs: window.durationMs, model: this.opts.cfg.model, track: info.context.track },
           }, 'debounce');
+          if (scene) segment.sceneCursors.push(scene.cursor);
         }
       } catch (e) {
         segment.error = e instanceof Error ? e.message : String(e);
@@ -377,7 +477,13 @@ export class MusicWorld implements World {
     segment.pending.push(task);
   }
 
-  private async onSegmentEnd(end: SegmentEnd): Promise<void> {
+  private onSegmentEnd(end: SegmentEnd): void {
+    this.previousEndPromise = this.finishSegment(end).catch((e) => {
+      this.logger('warn', '总结这一段失败', { error: e instanceof Error ? e.message : String(e) });
+    });
+  }
+
+  private async finishSegment(end: SegmentEnd): Promise<void> {
     const segment = this.segment;
     this.segment = undefined;
     if (!segment) return;
@@ -393,7 +499,7 @@ export class MusicWorld implements World {
     ]);
     let text = combineAnalyses(segment.analyses, end.durationMs, this.opts.cfg.windowSec, info.context);
     if (segment.error) text += `\n（这次有分析失败：${segment.error}）`;
-    await this.pushEvent('music.ended', text, {
+    const saved = await this.pushEvent('music.ended', text, {
       origin: 'external',
       meta: {
         startedAt: end.startedAt,
@@ -408,7 +514,16 @@ export class MusicWorld implements World {
         lyricsSource: info.lyrics ? 'lrclib' : undefined,
       },
     }, 'flush');
+    this.lastEnded = {
+      text,
+      track: info.context.track,
+      artist: info.context.artist,
+      cursor: saved?.cursor,
+      sceneCursors: [...segment.sceneCursors],
+      at: Date.now(),
+    };
     if (this.opts.cfg.afterSong === 'stop') {
+      this.lastEnded = undefined;
       this.stopCapture();
       this.lastTrack = '';
       await this.pushState('按设置：听完这首就停，已经停止。想继续再让我听。');
@@ -433,11 +548,11 @@ export class MusicWorld implements World {
     text: string,
     extra?: { origin?: 'internal' | 'external'; meta?: Record<string, unknown>; blobs?: BlobInput[] },
     trigger?: TriggerMode,
-  ): Promise<void> {
+  ): Promise<EventEnvelope | undefined> {
     const host = this.host;
-    if (!host) return;
+    if (!host) return undefined;
     try {
-      await host.pushEvent({
+      return await host.pushEvent({
         type,
         ts: nowIso(this.opts.timezone),
         source: this.id,
@@ -449,6 +564,7 @@ export class MusicWorld implements World {
       }, trigger ? { trigger } : undefined);
     } catch (e) {
       this.logger('warn', '推送事件失败', { type, error: e instanceof Error ? e.message : String(e) });
+      return undefined;
     }
   }
 

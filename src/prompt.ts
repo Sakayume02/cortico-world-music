@@ -21,6 +21,8 @@ export type LyricsSource = 'asr' | 'lrclib' | 'metadata';
 
 export interface MusicAnalysis {
   summary: string;
+  /** 风格：摇滚/流行/民谣/电子/古典…，给动作和感受参考。 */
+  genre?: string;
   /** 沉浸式感受：第一人称/画面/身体，不说参数。 */
   listenerSummary?: string;
   /** 情绪质地，一句话。 */
@@ -92,6 +94,7 @@ const SCHEMA = `{
   "arc": "这段音乐的情绪走向：从…到…",
   "isMusic": true,
   "musicConfidence": 0.0,
+  "genre": "摇滚/流行/民谣/电子/古典…；不确定就空",
   "tempoBpm": 0,
   "meter": "4/4 等；不确定就空",
   "key": "如 A、C#；不确定就空",
@@ -208,6 +211,7 @@ export function parseAnalysis(text: string): MusicAnalysis {
     arc: str(obj.arc),
     isMusic: obj.isMusic === true,
     musicConfidence: clamp(num(obj.musicConfidence) ?? 0, 0, 1),
+    genre: str(obj.genre),
     tempoBpm: num(obj.tempoBpm),
     meter: str(obj.meter),
     key: str(obj.key),
@@ -257,6 +261,7 @@ const lyricsSourceLabel = (s?: LyricsSource): string => {
 
 function technicalLines(a: MusicAnalysis): string[] {
   const facts: string[] = [];
+  if (a.genre) facts.push('风格：' + a.genre);
   if (a.tempoBpm) facts.push(`速度：${Math.round(a.tempoBpm)} BPM${a.meter ? ' / ' + a.meter : ''}`);
   if (a.key || a.mode) facts.push('调式：' + [a.key, a.mode].filter(Boolean).join(' '));
   if (a.instruments.length) facts.push('乐器：' + a.instruments.map((i) => `${i.name}(${i.confidence.toFixed(2)})`).join('、'));
@@ -276,14 +281,19 @@ function technicalLines(a: MusicAnalysis): string[] {
 export function reactionHint(a: MusicAnalysis): string {
   const valence = a.mood?.valence ?? 0;
   const arousal = a.mood?.arousal ?? 0.35;
-  if (valence > 0.25 && arousal > 0.5) {
+  const style = [a.genre, a.songContext?.artistStyle, a.songContext?.sourceMedia].filter(Boolean).join(' ');
+  const rocky = /摇滚|rock|金属|metal|朋克|punk|电子|electronic|舞曲|dance|funk|放克|嘻哈|hip.?hop/i.test(style);
+  if (valence < -0.25) {
+    return '安静、有点难过：有哭/委屈表情就用，没有就用【坐着发呆】+😢/🥲；别硬逗，也别假装真的流泪；听歌时别打盹/睡觉，保持专注。';
+  }
+  if (rocky || arousal > 0.72) {
+    return '很燃/有推动力：可以跟着点头、蹦跶、在屏幕底边跑来跑去；有跑/跳动作就用，没有就用【在屏幕底边走动】+兴奋/开心表情+颜文字；别装酷。';
+  }
+  if (valence > 0.25 && arousal > 0.45) {
     return '开心、想动：有跳舞/跑动动作就用，没有就用【在屏幕底边走动】+开心表情+颜文字，别写不存在的动作。';
   }
-  if (valence < -0.2 && arousal < 0.55) {
-    return '安静、有点难过：有哭/委屈表情就用，没有就用【坐着发呆】+😢/🥲，别硬逗，也别假装真的流泪；听歌时别打盹/睡觉，保持专注。';
-  }
-  if (arousal > 0.62) {
-    return '节奏有推动力：可以轻轻晃/点头，用现有动作。';
+  if (arousal > 0.55) {
+    return '节奏有推动力：可以轻轻晃/点头，用现有动作，别打盹。';
   }
   return '适合安静听、轻轻晃；用现有动作，别打盹/睡觉。';
 }

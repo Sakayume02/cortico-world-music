@@ -29,8 +29,13 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
     events: [
       {
         type: 'music.started',
-        description: { zh: '用户明确要求一起听后，确认一段音乐开始；可能带播放器曲目信息或屏幕截图。', en: 'After the user explicitly asked to listen, a music segment is confirmed; may carry track info or a screenshot.' },
+        description: { zh: '第一首或来源未知时确认音乐开始；带曲目或截图，bot 应先报幕。', en: 'The first song or an unknown source is confirmed; carries track or screenshot, and the bot should announce it.' },
         trigger: 'flush',
+      },
+      {
+        type: 'music.switch',
+        description: { zh: '换歌：上一首完整总结 + 新歌报幕，interrupt 掉上一首没说完的话。', en: 'Song change: the full previous summary plus the new track, interrupting unfinished old talk.' },
+        trigger: 'interrupt',
       },
       {
         type: 'music.scene',

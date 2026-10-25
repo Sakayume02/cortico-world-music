@@ -71,6 +71,13 @@ describe('prompt', () => {
     };
     expect(reactionHint(happy)).toContain('在屏幕底边走动');
     expect(reactionHint(happy)).toContain('开心');
+    const rock: MusicAnalysis = {
+      ...analysis,
+      genre: '摇滚',
+      mood: { valence: -0.05, arousal: 0.75, quality: '很燃', confidence: 0.8 },
+    };
+    expect(reactionHint(rock)).toContain('跑来跑去');
+    expect(reactionHint(rock)).toContain('在屏幕底边走动');
   });
 
   it('combines with trusted lyrics and keeps parameters internal', () => {
