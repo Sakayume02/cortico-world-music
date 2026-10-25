@@ -39,6 +39,47 @@ npm whoami
 `npm whoami` 打印你的用户名就是成功。
 如果开了两步验证，`npm publish` 会要求一次性验证码。
 
+### 网页一直提示“机器人” / 注册不了
+
+网页注册走的是 Cloudflare 的机器人验证，VPN 的数据中心 IP 很容易被判定成机器人；关掉 VPN 又可能一直转圈。可以绕过网页，用 npm CLI 的旧式注册接口直接建账号：
+
+```powershell
+npm adduser --auth-type=legacy
+```
+
+它会依次问 Username、Password、Email（Email 会公开显示，用你常用的邮箱），不需要浏览器验证码。创建后：
+
+```powershell
+npm whoami
+```
+
+成功会打印用户名。
+然后去邮箱点 npm 的验证链接（没验证的账号不能发布），再回来发布。
+
+如果 `legacy` 也报错（有些网络会拦这个接口）：
+
+1. 关 VPN，用手机热点试一次；或者换一个住宅 IP 的节点（不要用常见机房 VPN）。
+2. 浏览器用无痕窗口、关掉广告拦截/脚本拦截、换 Chrome/Edge 再试注册。
+3. 还是不行，用 **GitHub Codespaces**（你有 GitHub，免费额度够）：
+   - 先把最新提交 push 到 GitHub；
+   - 打开仓库 → **Code** → **Codespaces** → **Create codespace on main**；
+   - 在 Codespaces 终端里跑：
+
+```bash
+npm adduser --auth-type=legacy
+npm whoami
+```
+
+   - 邮箱验证后，直接在 Codespaces 里发布（`dist` 已经提交，跳过本机脚本）：
+
+```bash
+cd /workspaces/cortico-world-music
+npm publish --access public --ignore-scripts
+```
+
+   - `--ignore-scripts` 会跳过 `prepublishOnly`/`prepare`，但 `dist/webui.js` 已经在仓库里，发布内容不受影响；本机前面已经跑过 typecheck/test。
+   - 发布成功后再在本地 `npm login --auth-type=legacy`，以后更新版本就可以从 Windows 发布。
+
 检查名字（当前 `cortico-world-music` 在 npm 上还没人用）：
 
 ```powershell
