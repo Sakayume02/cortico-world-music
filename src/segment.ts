@@ -44,6 +44,7 @@ export class MusicSegmenter {
   private windowSamples = 0;
   private windowStartedAt = 0;
   private silenceSamples = 0;
+  private lastFrameAt = 0;
 
   constructor(options: SegmenterOptions) {
     this.opts = {
@@ -64,6 +65,7 @@ export class MusicSegmenter {
     const { pcm, carry } = downsampleStereo48ToMono16(input, this.carry);
     this.carry = carry;
     if (!pcm.length) return;
+    this.lastFrameAt = this.opts.now();
     if (this.pending.length) {
       const merged = new Int16Array(this.pending.length + pcm.length);
       merged.set(this.pending, 0);
@@ -83,6 +85,17 @@ export class MusicSegmenter {
 
   /** 主动结束当前段（暂停/关闭时）。 */
   flush(): void {
+    const end = this.finish();
+    if (end) this.opts.onEnd?.(end);
+  }
+
+  /**
+   * 静音看门狗：原生采集在低于 -70dBFS 时直接不回调，安静表现为「没有帧」，
+   * 不能只靠样本数收尾。World 每隔 500ms 调一次，超过 silenceMs 没新帧就结束这一段。
+   */
+  tick(): void {
+    if (!this.active) return;
+    if (this.opts.now() - this.lastFrameAt < this.opts.silenceMs) return;
     const end = this.finish();
     if (end) this.opts.onEnd?.(end);
   }

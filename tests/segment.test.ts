@@ -66,4 +66,21 @@ describe('MusicSegmenter', () => {
     seg.push48Stereo(tone(1.1));
     expect(starts).toBe(2);
   });
+
+  it('ends when frames stop arriving (native drops silent packets)', () => {
+    let t = 1000;
+    let ends = 0;
+    const seg = new MusicSegmenter({
+      windowSec: 1,
+      minWindowSec: 0.5,
+      silenceMs: 300,
+      now: () => t,
+      onEnd: () => { ends++; },
+    });
+    seg.push48Stereo(tone(1.1));
+    expect(ends).toBe(0);
+    t += 2500;
+    seg.tick();
+    expect(ends).toBe(1);
+  });
 });

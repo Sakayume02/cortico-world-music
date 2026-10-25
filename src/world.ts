@@ -87,6 +87,7 @@ export class MusicWorld implements World {
   private lastAnalysis?: MusicAnalysis;
   private segment?: ActiveSegment;
   private callTimes: number[] = [];
+  private silenceTimer: ReturnType<typeof setInterval> | null = null;
   private logger: (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => void;
 
   constructor(private readonly opts: MusicWorldOptions) {
@@ -147,6 +148,7 @@ export class MusicWorld implements World {
 
   async stop(): Promise<void> {
     this.running = false;
+    this.stopTimer();
     this.segmenter?.reset();
     this.segmenter = null;
     this.capture?.stop();
@@ -169,10 +171,21 @@ export class MusicWorld implements World {
     this.segmenter = segmenter;
     this.running = true;
     this.lastError = '';
+    this.stopTimer();
+    this.silenceTimer = setInterval(() => this.segmenter?.tick(), 500);
+    this.silenceTimer.unref?.();
+  }
+
+  private stopTimer(): void {
+    if (this.silenceTimer) {
+      clearInterval(this.silenceTimer);
+      this.silenceTimer = null;
+    }
   }
 
   private stopCapture(): void {
     this.running = false;
+    this.stopTimer();
     this.segmenter = null;
     this.capture?.stop();
     this.capture = null;
