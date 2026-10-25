@@ -141,6 +141,7 @@ export class MusicWorld implements World {
   private polledTrackKey = '';
   private pendingTrackMeta?: { meta: PlayerMeta; at: number };
   private playerPaused = false;
+  private lastPauseAt = 0;
   private listeningStartedAt = 0;
   private logger: (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => void;
 
@@ -206,6 +207,7 @@ export class MusicWorld implements World {
     this.previousEndPromise = undefined;
     this.pendingTrackMeta = undefined;
     this.playerPaused = false;
+    this.lastPauseAt = 0;
     await this.pushState('待命：还没有开始听。等用户明确说想一起听音乐（比如“听首歌”“一起听”）时，再调用 music_watch start；不要自己开始。');
   }
 
@@ -220,6 +222,7 @@ export class MusicWorld implements World {
     this.previousEndPromise = undefined;
     this.pendingTrackMeta = undefined;
     this.playerPaused = false;
+    this.lastPauseAt = 0;
   }
 
   /** 读曲目（不查歌词，尽量快），优先用轮询刚发现的曲目，避免元数据更新滞后的旧曲目。 */
@@ -286,6 +289,7 @@ export class MusicWorld implements World {
     this.polledTrackKey = '';
     this.pendingTrackMeta = undefined;
     this.playerPaused = false;
+    this.lastPauseAt = 0;
     this.stopTimer();
     this.silenceTimer = setInterval(() => this.segmenter?.tick(), 500);
     this.silenceTimer.unref?.();
@@ -310,6 +314,7 @@ export class MusicWorld implements World {
       if (meta.status === 'Paused') {
         if (!this.playerPaused) {
           this.playerPaused = true;
+          this.lastPauseAt = Date.now();
           const label = [meta.title, meta.artist].filter(Boolean).join(' — ');
           await this.pushState(`播放器暂停了${label ? `：${label}` : ''}。我把刚才那段收一下。`, 'info', { paused: true, track: label || undefined });
         }
@@ -613,6 +618,11 @@ export class MusicWorld implements World {
     this.segment = undefined;
     if (!segment) return;
     if (segment.dropped || segment.confirmed !== true) {
+      // 播放器曲目已经报过幕，但这一段还没等到确认窗口就停了：暂停/结束都要给个反馈。
+      if (!segment.dropped && segment.startedPushed && Date.now() - this.lastPauseAt > 10_000) {
+        this.lastPauseAt = Date.now();
+        await this.pushState('音乐停下来了（暂停或结束）；这一段还没确认是音乐，我先不总结。', 'info', { paused: true });
+      }
       this.logger('debug', '这一段没有确认是音乐，不总结');
       return;
     }
@@ -635,7 +645,7 @@ export class MusicWorld implements World {
       };
       await this.pushEvent(
         'music.ending',
-        `【听完了】最后一窗还在补分析。先给你这一版；music.ended 是最终完整版，不要重复已经说过的。\n\n${partial}`,
+        `【这一段结束了${this.playerPaused ? '（暂停）' : ''}】最后一窗还在补分析。先给你这一版；music.ended 是最终完整版，不要重复已经说过的。\n\n${partial}`,
         {
           origin: 'external',
           meta: {

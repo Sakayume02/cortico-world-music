@@ -198,6 +198,24 @@ describe('Music World', () => {
     await world.stop();
   });
 
+  it('gives feedback when a known player track stops before the first window confirms', async () => {
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+      metadataReader: async () => meta,
+      analyze: async () => new Promise(() => {}),
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+    capture.feed(tone(1.2));
+    await sleep(40);
+    capture.feed(silence(3));
+    await sleep(160);
+    expect(host.events.some((e) => e.type === 'music.started')).toBe(true);
+    expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('音乐停下来了'))).toBe(true);
+    await world.stop();
+  });
+
   it('drops audio that is not music', async () => {
     const { world, capture } = makeWorld({
       analyze: async () => ({ analysis: { ...analysis, isMusic: false, musicConfidence: 0.95, summary: '播客旁白' } }),
