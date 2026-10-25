@@ -56,31 +56,6 @@ export const MUSIC_CONFIG_GROUP: ConfigGroup = {
     type: 'object',
     title: '音乐',
     properties: {
-      'worlds.music.backend': {
-        type: 'string',
-        title: '分析后端',
-        description: 'dashscope = 内置 Qwen-Omni；openai-compatible = 你自己的 OpenAI 兼容音频接口；off = 只采集不分析。',
-        enum: ['dashscope', 'openai-compatible', 'off'],
-        'x-hot': true,
-      },
-      'worlds.music.baseUrl': {
-        type: 'string',
-        title: '接口地址',
-        description: 'DashScope 的 OpenAI 兼容地址；不同业务空间的地址可能不同。',
-        'x-hot': true,
-      },
-      'worlds.music.model': {
-        type: 'string',
-        title: '模型',
-        description: '支持音频输入、只输出文本的模型名，例如 qwen3.8-omni-flash。',
-        'x-hot': true,
-      },
-      'worlds.music.apiKeySecret': {
-        type: 'string',
-        title: '密钥变量名',
-        description: '部署 .env 里的环境变量名；密钥本身不写进配置。',
-        'x-hot': true,
-      },
       'worlds.music.mode': {
         type: 'string',
         title: '默认模式',

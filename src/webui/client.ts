@@ -5,7 +5,6 @@ interface SettingsState {
   backend: string;
   baseUrl: string;
   model: string;
-  afterSong: string;
   hasKey: boolean;
   keyName: string;
   models: string[];
@@ -41,12 +40,6 @@ const settingsPanel: WebUiPanel = {
       ],
     });
     const model = ui.input({ placeholder: 'qwen3.8-omni-flash 或你的模型名' });
-    const afterSong = ui.select({
-      options: [
-        { value: 'continue', label: '继续听下一首' },
-        { value: 'stop', label: '听完这首就停（总结后自动停）' },
-      ],
-    });
     const key = ui.input({ type: 'password', placeholder: 'sk-…（只写不读）' });
     const msg = ui.msgline();
     const actions = ui.actions();
@@ -61,7 +54,6 @@ const settingsPanel: WebUiPanel = {
       ui.field('接口地址', baseUrl),
       ui.field('常用模型', modelPick),
       ui.field('模型名（可手填）', model),
-      ui.field('听完一首后', afterSong),
       ui.field('API Key', key),
       actions,
       msg,
@@ -79,7 +71,6 @@ const settingsPanel: WebUiPanel = {
       baseUrl.value = s.baseUrl;
       model.value = s.model;
       modelPick.value = s.models.includes(s.model) ? s.model : CUSTOM;
-      afterSong.value = s.afterSong;
       key.value = '';
       key.placeholder = s.hasKey ? `已配置（留空不修改，变量：${s.keyName}）` : 'sk-…（只写不读）';
       keyName.textContent = `密钥变量：${s.keyName} · ${s.hasKey ? '已配置' : '未配置'}`;
@@ -112,7 +103,6 @@ const settingsPanel: WebUiPanel = {
             backend: backend.value,
             baseUrl: baseUrl.value,
             model: model.value,
-            afterSong: afterSong.value,
           }]);
           show(s);
           say('已保存。');

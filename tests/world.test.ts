@@ -235,11 +235,10 @@ describe('Music World', () => {
       backend: 'openai-compatible',
       baseUrl: 'https://example.com/v1',
       model: 'my-audio-model',
-      afterSong: 'stop',
-    }]) as { backend: string; afterSong: string };
+    }]) as { backend: string };
     expect(saved.backend).toBe('openai-compatible');
-    expect(saved.afterSong).toBe('stop');
     expect(captured.persisted?.model).toBe('my-audio-model');
+    expect(captured.persisted?.afterSong).toBeUndefined();
 
     const keyState = await invoke('settings', 'save-key', [{ key: 'sk-test-123456' }]) as { hasKey: boolean };
     expect(captured.stored?.name).toBe('AUDIO_API_KEY');

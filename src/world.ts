@@ -96,7 +96,6 @@ interface SettingsState {
   backend: string;
   baseUrl: string;
   model: string;
-  afterSong: string;
   hasKey: boolean;
   keyName: string;
   models: string[];
@@ -207,6 +206,7 @@ export class MusicWorld implements World {
       context: {
         track: meta.title,
         artist: meta.artist,
+        album: meta.album,
         lyrics: lyrics?.text,
         lyricsSource: lyrics ? 'lrclib' : undefined,
       },
@@ -320,7 +320,7 @@ export class MusicWorld implements World {
           const trackLine = info.context.track
             ? `开始一起听：${info.context.track}${info.context.artist ? ' — ' + info.context.artist : ''}（来自播放器媒体信息）。`
             : '开始听到一段音乐（系统声音）。';
-          const lines = [trackLine, '先别急着报参数，跟着听；想动就动，用你现有的动作；不想动就安静听。结束/暂停时再说你听到了什么、想到了什么。'];
+          const lines = [trackLine, '先别急着报参数，跟着听；想动就动，用你现有的动作；不想动就安静听。听歌时别打盹/睡觉，专注一点。结束/暂停时再说你听到了什么、想到了什么。'];
 
           let screenshot: BlobInput | undefined;
           let note = '';
@@ -354,6 +354,7 @@ export class MusicWorld implements World {
               musicConfidence: outcome.analysis.musicConfidence,
               track: info.context.track,
               artist: info.context.artist,
+              album: info.context.album,
               lyricsSource: info.lyrics ? 'lrclib' : undefined,
             },
             blobs: screenshot ? [screenshot] : undefined,
@@ -403,6 +404,7 @@ export class MusicWorld implements World {
         model: this.opts.cfg.model,
         track: info.context.track,
         artist: info.context.artist,
+        album: info.context.album,
         lyricsSource: info.lyrics ? 'lrclib' : undefined,
       },
     }, 'flush');
@@ -518,7 +520,6 @@ export class MusicWorld implements World {
       backend: cfg.backend,
       baseUrl: cfg.baseUrl,
       model: cfg.model,
-      afterSong: cfg.afterSong,
       hasKey,
       keyName,
       models: ['qwen3.8-omni-flash', 'qwen3-omni-flash', 'qwen-omni-turbo'],
@@ -537,14 +538,11 @@ export class MusicWorld implements World {
     }
     const model = String(input.model ?? this.opts.cfg.model).trim();
     if (backend !== 'off' && !model) throw new Error('模型名不能为空。');
-    const afterSong = String(input.afterSong ?? this.opts.cfg.afterSong);
-    if (afterSong !== 'continue' && afterSong !== 'stop') throw new Error('afterSong 只能是 continue / stop。');
 
     this.opts.cfg.backend = backend as MusicConfigSection['backend'];
     this.opts.cfg.baseUrl = baseUrl;
     this.opts.cfg.model = model;
-    this.opts.cfg.afterSong = afterSong;
-    this.opts.persist({ backend: backend as MusicConfigSection['backend'], baseUrl, model, afterSong: afterSong as MusicConfigSection['afterSong'] });
+    this.opts.persist({ backend: backend as MusicConfigSection['backend'], baseUrl, model });
     return this.panelState();
   }
 
@@ -566,7 +564,6 @@ export class MusicWorld implements World {
         backend: 'dashscope',
         baseUrl: MUSIC_DEFAULTS.baseUrl,
         model: MUSIC_DEFAULTS.model,
-        afterSong: this.opts.cfg.afterSong,
       });
     }
     throw new Error('未知方法：' + method);

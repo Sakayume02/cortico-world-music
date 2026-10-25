@@ -45,6 +45,15 @@ export interface MusicAnalysis {
   structure?: string;
   mood?: MusicMood;
   lyrics?: { present: boolean; text: string; confidence: number; source?: LyricsSource; complete?: boolean };
+  /** 歌曲背景：歌手风格、年代、出处（游戏/动漫/电影）、作品场景、想表达的主旨；不知道就空。 */
+  songContext?: {
+    artistStyle?: string;
+    era?: string;
+    sourceMedia?: string;
+    scene?: string;
+    meaning?: string;
+    confidence: number;
+  };
   /** 贴切的历史典故/名著联想；不贴切就不给。 */
   reference?: { work: string; connection: string; confidence: number };
   uncertain?: string[];
@@ -54,6 +63,7 @@ export interface MusicAnalysis {
 export interface ListeningContext {
   track?: string;
   artist?: string;
+  album?: string;
   lyrics?: string;
   lyricsSource?: LyricsSource;
 }
@@ -94,6 +104,7 @@ const SCHEMA = `{
   "structure": "重复/对比/发展/回归/段落感；没有就空",
   "mood": {"valence": 0.0, "arousal": 0.0, "quality": "情绪的质地，一句话", "confidence": 0.0},
   "lyrics": {"present": false, "text": "只写确实听清的短句；有可信歌词时照抄；听不清就空", "confidence": 0.0},
+  "songContext": {"artistStyle": "歌手/作者风格；不确定就空", "era": "创作/发行年代；不确定就空", "sourceMedia": "游戏/动漫/电影/剧集/独立…；不确定就空", "scene": "这首歌在作品/场景里想表达什么；不确定就空", "meaning": "歌词/歌名想表达的主旨，两三句，贴歌词", "confidence": 0.0},
   "reference": {"work": "贴切的历史典故/名著小说名；不贴切就空", "connection": "为什么贴切，一两句；不贴切就空", "confidence": 0.0},
   "uncertain": ["不确定的点"]
 }`;
@@ -106,7 +117,7 @@ export function buildAnalysisPrompt(
   const hints = cfg.instrumentHints.trim();
   const known = context?.lyrics?.trim();
   const trackLine = context?.track
-    ? `你正在听的曲目（来自播放器媒体信息）：${context.track}${context.artist ? ' — ' + context.artist : ''}。`
+    ? `你正在听的曲目（来自播放器媒体信息）：${context.track}${context.artist ? ' — ' + context.artist : ''}${context.album ? '，专辑：' + context.album : ''}。`
     : '';
   return [
     '你是一个真正爱音乐的人，也是一个懂音乐的音乐人。你正在和听音乐的人一起听音乐。',
@@ -125,6 +136,9 @@ export function buildAnalysisPrompt(
     '- **感受要贴着歌名和歌词想表达的内容与场景**：有可信歌名/歌词时，先理解它在说什么，再写感受；不要脱离歌词另编一个故事，也不要自己瞎猜人物/情节。',
     '- 没有可信歌词、纯音乐或歌词听不清时，只写音乐本身的氛围和画面；不要把听错的词当成歌词内容。',
     '- 可以联想贴切的历史典故或名著小说（国内外都行），但必须和歌词/情绪/场景对得上；不贴切就不写，不要掉书袋、不要编引文。',
+    '- 如果知道歌手风格、创作/发行年代、出处（游戏/动漫/电影/剧集）或在作品里的场景，写进 songContext，先用它理解这首歌想表达什么；**只有确定才写，不确定就留空**，不要猜作品/年代。',
+    '- 如果这首歌出自某个作品/场景，感受要贴着那个场景和歌词，不要脱离作品另编故事。',
+    '- 听歌时保持专注：不要写成想睡觉/打盹，也不要假装睡着。',
     '',
     '判断与术语（这些只给 bot 理解，不要照念给用户）：',
     '- 先判断这段音频是不是音乐：歌曲、器乐、纯音乐、说唱伴奏算音乐；播客、有声书、直播里纯说话、ASMR 说话不算。不是音乐就把 isMusic 设为 false（仍返回完整 JSON），musicConfidence 给判断置信度。',
@@ -178,6 +192,13 @@ export function parseAnalysis(text: string): MusicAnalysis {
   const refObj = obj.reference && typeof obj.reference === 'object' ? obj.reference as Record<string, unknown> : undefined;
   const refWork = refObj ? str(refObj.work) : undefined;
   const refConnection = refObj ? str(refObj.connection) : undefined;
+  const songObj = obj.songContext && typeof obj.songContext === 'object' ? obj.songContext as Record<string, unknown> : undefined;
+  const songArtist = songObj ? str(songObj.artistStyle) : undefined;
+  const songEra = songObj ? str(songObj.era) : undefined;
+  const songSource = songObj ? str(songObj.sourceMedia) : undefined;
+  const songScene = songObj ? str(songObj.scene) : undefined;
+  const songMeaning = songObj ? str(songObj.meaning) : undefined;
+  const hasSongContext = !!(songArtist || songEra || songSource || songScene || songMeaning);
   return {
     summary: str(obj.summary) ?? '（模型没有给 summary）',
     listenerSummary: str(obj.listenerSummary),
@@ -215,6 +236,14 @@ export function parseAnalysis(text: string): MusicAnalysis {
       connection: refConnection,
       confidence: clamp(num(refObj?.confidence) ?? 0.4, 0, 1),
     } : undefined,
+    songContext: hasSongContext ? {
+      artistStyle: songArtist,
+      era: songEra,
+      sourceMedia: songSource,
+      scene: songScene,
+      meaning: songMeaning,
+      confidence: clamp(num(songObj?.confidence) ?? 0.4, 0, 1),
+    } : undefined,
     uncertain: Array.isArray(obj.uncertain) ? obj.uncertain.filter((x): x is string => typeof x === 'string').slice(0, 10) : [],
     raw: typeof obj.raw === 'string' ? obj.raw : undefined,
   };
@@ -251,18 +280,31 @@ export function reactionHint(a: MusicAnalysis): string {
     return '开心、想动：有跳舞/跑动动作就用，没有就用【在屏幕底边走动】+开心表情+颜文字，别写不存在的动作。';
   }
   if (valence < -0.2 && arousal < 0.55) {
-    return '安静、有点难过：有哭/委屈表情就用，没有就用【坐着发呆】+😢/🥲，别硬逗，也别假装真的流泪。';
+    return '安静、有点难过：有哭/委屈表情就用，没有就用【坐着发呆】+😢/🥲，别硬逗，也别假装真的流泪；听歌时别打盹/睡觉，保持专注。';
   }
   if (arousal > 0.62) {
     return '节奏有推动力：可以轻轻晃/点头，用现有动作。';
   }
-  return '适合安静听、轻轻晃；用现有动作。';
+  return '适合安静听、轻轻晃；用现有动作，别打盹/睡觉。';
+}
+
+function songContextLines(s?: MusicAnalysis['songContext']): string {
+  if (!s) return '';
+  const parts: string[] = [];
+  if (s.artistStyle) parts.push('歌手/作者风格：' + s.artistStyle);
+  if (s.era) parts.push('年代：' + s.era);
+  if (s.sourceMedia) parts.push('出处：' + s.sourceMedia);
+  if (s.scene) parts.push('场景：' + s.scene);
+  if (s.meaning) parts.push('想表达：' + s.meaning);
+  return parts.join('；');
 }
 
 /** 一个窗口的正文：先感受，后内部参考。 */
 export function formatAnalysis(a: MusicAnalysis, context?: ListeningContext): string {
   const lines: string[] = [];
-  if (context?.track) lines.push(`曲目：${context.track}${context.artist ? ' — ' + context.artist : ''}`);
+  if (context?.track) lines.push(`曲目：${context.track}${context.artist ? ' — ' + context.artist : ''}${context.album ? '（专辑：' + context.album + '）' : ''}`);
+  const background = songContextLines(a.songContext);
+  if (background) lines.push('歌曲背景（如果知道）：' + background);
   lines.push('【这段的感受】');
   lines.push(a.listenerSummary || a.summary);
   const feeling = a.feeling || a.mood?.quality;
@@ -300,6 +342,7 @@ export function combineAnalyses(
   const bodies = [...new Set(analyses.map((a) => a.body).filter((x): x is string => !!x))];
   const arcs = [...new Set(analyses.map((a) => a.arc).filter((x): x is string => !!x))];
   const references = analyses.map((a) => a.reference).filter((r): r is NonNullable<MusicAnalysis['reference']> => !!r?.work && !!r.connection);
+  const backgrounds = analyses.map((a) => a.songContext).filter((s): s is NonNullable<MusicAnalysis['songContext']> => !!songContextLines(s));
   const summaries = [...new Set(analyses.map((a) => a.summary).filter(Boolean))];
   const lyrics = [...new Set(analyses.map((a) => a.lyrics).filter((l): l is NonNullable<MusicAnalysis['lyrics']> => !!l?.present && !!l.text))];
   const uncertain = [...new Set(analyses.flatMap((a) => a.uncertain ?? []))];
@@ -310,6 +353,10 @@ export function combineAnalyses(
 
   const lines: string[] = [`【一起听完这一段】约 ${Math.round(durationMs / 1000)} 秒，共 ${analyses.length} 个窗口（每窗约 ${windowSec} 秒）。`];
   if (context?.track) lines.push(`曲目：${context.track}${context.artist ? ' — ' + context.artist : ''}（来自播放器媒体信息）`);
+  if (backgrounds.length) {
+    const background = songContextLines(backgrounds[backgrounds.length - 1]);
+    if (background) lines.push('歌曲背景（如果知道）：' + background);
+  }
   lines.push('');
   lines.push('【整体感受】');
   if (listeners.length) lines.push(listeners.slice(-3).join('\n'));
