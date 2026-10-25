@@ -1,0 +1,59 @@
+{
+  "name": "cortico-world-music",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "音乐（Music）—— 让 Coopanion 的 bot 听见电脑上正在播放的音乐：系统环回采集、云端理解乐器/节奏/调性/情绪与歌词，默认在一段结束时总结，也可实时感受。只支持 Windows。",
+  "license": "MIT",
+  "keywords": [
+    "cortico-world",
+    "cortico",
+    "coopanion",
+    "music",
+    "audio",
+    "listening",
+    "wasapi",
+    "loopback",
+    "qwen-omni"
+  ],
+  "os": [
+    "win32"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.28.6",
+  "main": "./src/index.ts",
+  "cortico": {
+    "kind": "world",
+    "api": 6,
+    "displayName": "音乐",
+    "tags": [
+      "voice",
+      "requires-key",
+      "sensitive-data",
+      "experimental"
+    ],
+    "describe": "describe.json"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "describe.json",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "loopback-capture": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "cortico": "^0.2.7",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

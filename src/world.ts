@@ -1,0 +1,402 @@
+/**
+ * 音乐 World：系统环回采集 → 静音/换歌判断 → 云端音频理解 → 事件与工具。
+ * 默认 end 模式：一段结束/暂停时把整段分析交给 bot；live 模式每个窗口给一句。
+ */
+import { fileURLToPath } from 'node:url';
+import type {
+  BlobInput, ToolCallContext, ToolDef, TriggerMode, World, WorldHost, WorldWebUiDecl,
+} from 'cortico/core/types.ts';
+import { nowIso } from 'cortico/core/util.ts';
+import { MUSIC_CONFIG_GROUP, type MusicConfigSection } from './config.ts';
+import { MusicSegmenter, type SegmentEnd, type WindowChunk } from './segment.ts';
+import { encodeWav } from './wav.ts';
+import { combineAnalyses, formatAnalysis, type MusicAnalysis } from './prompt.ts';
+import { analyzeWithDashscope, type AnalysisOutcome } from './analysis.ts';
+import { capturePrimaryScreen, type ScreenShot } from './screen.ts';
+import { SystemAudioCapture, type CaptureLike } from './capture.ts';
+
+const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
+
+export const MUSIC_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
+  {
+    name: 'music_watch',
+    description: 'Start or stop listening to the computer\'s audio, or read the current state. The World captures system audio and analyzes music in windows; events arrive on their own.',
+    tags: ['act'],
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        action: { type: 'string', enum: ['start', 'stop', 'status'], description: 'start = begin listening, stop = stop and summarize the current piece, status = read state.' },
+        mode: { type: 'string', enum: ['end', 'live', 'both'], description: 'Optional; switch the default delivery mode while starting.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'music_now',
+    description: 'Read whether the World is listening, what segment is active, and the most recent music analysis.',
+    tags: ['read'],
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'music_mode',
+    description: 'Set how analyses are delivered: end (summarize when a piece ends or pauses), live (a short comment per window), or both.',
+    tags: ['act'],
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        mode: { type: 'string', enum: ['end', 'live', 'both'] },
+      },
+      required: ['mode'],
+    },
+  },
+];
+
+export interface MusicWorldOptions {
+  cfg: MusicConfigSection;
+  timezone: string;
+  dataDir: string;
+  secret(name: string): string;
+  persist(patch: Partial<MusicConfigSection>): void;
+  captureFactory?: () => CaptureLike;
+  analyze?: (wav: Uint8Array, cfg: MusicConfigSection, key: string, windowSec: number) => Promise<AnalysisOutcome>;
+  screenCapture?: () => Promise<ScreenShot | null>;
+  log?: (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => void;
+}
+
+interface ActiveSegment {
+  startedAt: number;
+  analyses: MusicAnalysis[];
+  pending: Promise<void>[];
+  windows: number;
+  keyWarned: boolean;
+  error?: string;
+}
+
+export class MusicWorld implements World {
+  readonly id = 'music';
+
+  private host?: WorldHost;
+  private capture: CaptureLike | null = null;
+  private segmenter: MusicSegmenter | null = null;
+  private running = false;
+  private lastError = '';
+  private lastAnalysis?: MusicAnalysis;
+  private segment?: ActiveSegment;
+  private callTimes: number[] = [];
+  private logger: (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => void;
+
+  constructor(private readonly opts: MusicWorldOptions) {
+    this.logger = opts.log ?? (() => {});
+  }
+
+  envPromptVars(): Record<string, string> {
+    return {
+      'music.mode': this.opts.cfg.mode,
+      'music.backend': this.opts.cfg.backend,
+      'music.model': this.opts.cfg.model,
+    };
+  }
+
+  tools(): ToolDef[] {
+    return [this.watchTool(), this.nowTool(), this.modeTool()];
+  }
+
+  webUi(): WorldWebUiDecl {
+    return {
+      label: '音乐',
+      lamps: [{
+        label: '听系统声音',
+        state: this.running ? 'online' : this.lastError ? 'error' : 'offline',
+        hint: this.lastError || (this.running ? '正在听' : '未开始'),
+      }],
+      config: [MUSIC_CONFIG_GROUP],
+      promptDocs: [{
+        key: 'worlds.music.envPrompt',
+        title: '音乐 · 环境提示词',
+        description: '音乐 World 进 system 前缀的那一段。',
+        path: ENV_PROMPT_FILE,
+        role: 'envPrompt',
+        vars: [
+          { name: 'music.mode', description: '当前默认模式：end / live / both。' },
+          { name: 'music.backend', description: '当前分析后端：dashscope / off。' },
+          { name: 'music.model', description: '当前云端模型名。' },
+        ],
+      }],
+    };
+  }
+
+  async start(host: WorldHost): Promise<void> {
+    this.host = host;
+    this.logger = (level, message, data) => {
+      if (level === 'debug' && !this.opts.cfg.debug) return;
+      try { host.log[level](message, data); } catch {}
+    };
+    try {
+      this.startCapture();
+      await this.pushState('开始听系统声音；有音乐就会自己分析。');
+    } catch (e) {
+      this.lastError = e instanceof Error ? e.message : String(e);
+      this.logger('error', '采集启动失败', { error: this.lastError });
+      await this.pushState('无法开始采集：' + this.lastError, 'error');
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.running = false;
+    this.segmenter?.reset();
+    this.segmenter = null;
+    this.capture?.stop();
+    this.capture = null;
+    this.segment = undefined;
+  }
+
+  private startCapture(): void {
+    if (this.running) return;
+    const capture = this.opts.captureFactory?.() ?? new SystemAudioCapture();
+    const segmenter = new MusicSegmenter({
+      windowSec: this.opts.cfg.windowSec,
+      minWindowSec: Math.min(4, Math.max(1, this.opts.cfg.windowSec)),
+      onStart: (info) => { void this.onSegmentStart(info.startedAt); },
+      onWindow: (window) => { void this.onWindow(window); },
+      onEnd: (end) => { void this.onSegmentEnd(end); },
+    });
+    capture.start((pcm) => segmenter.push48Stereo(pcm));
+    this.capture = capture;
+    this.segmenter = segmenter;
+    this.running = true;
+    this.lastError = '';
+  }
+
+  private stopCapture(): void {
+    this.running = false;
+    this.segmenter = null;
+    this.capture?.stop();
+    this.capture = null;
+  }
+
+  private async onSegmentStart(startedAt: number): Promise<void> {
+    const segment: ActiveSegment = { startedAt, analyses: [], pending: [], windows: 0, keyWarned: false };
+    this.segment = segment;
+
+    let blob: BlobInput | undefined;
+    let note = '';
+    if (this.opts.cfg.screenFallback) {
+      const acceptsImage = this.host?.modelFacts.accepts('image/png') ?? false;
+      if (!acceptsImage) {
+        note = '（当前模型不接受图片，无法用截图识别播放器。）';
+      } else {
+        try {
+          const shot = await (this.opts.screenCapture ?? (() => capturePrimaryScreen(this.opts.dataDir)))();
+          if (shot) {
+            blob = { bytes: shot.bytes, mime: shot.mime, name: shot.name, fallbackText: '换歌时的主屏截图，用来识别播放器/歌名' };
+          } else {
+            note = '（截屏失败，拿不到播放器画面。）';
+          }
+        } catch {
+          note = '（截屏失败，拿不到播放器画面。）';
+        }
+      }
+    }
+
+    const lines = ['开始听到一段音乐（系统声音）。'];
+    if (blob) lines.push('附上一张当前屏幕截图，供你识别播放器/歌名；识别不出就只说听感。');
+    if (note) lines.push(note);
+    if (this.opts.cfg.backend === 'off') lines.push('分析后端关闭，这次只记录、不分析。');
+    await this.pushEvent('music.started', lines.join('\n'), {
+      origin: 'external',
+      meta: { startedAt, mode: this.opts.cfg.mode, backend: this.opts.cfg.backend, model: this.opts.cfg.model },
+      blobs: blob ? [blob] : undefined,
+    }, 'flush');
+  }
+
+  private async onWindow(window: WindowChunk): Promise<void> {
+    const segment = this.segment;
+    if (!segment) return;
+    if (this.opts.cfg.backend === 'off') return;
+    if (!this.allowCall()) {
+      this.logger('warn', '分析请求超过每分钟上限，跳过一个窗口');
+      return;
+    }
+    const key = this.opts.secret(this.opts.cfg.apiKeySecret);
+    if (!key) {
+      this.lastError = `缺少密钥（${this.opts.cfg.apiKeySecret}），请配置部署 .env。`;
+      if (!segment.keyWarned) {
+        segment.keyWarned = true;
+        await this.pushState('没有找到分析密钥，先只采集不分析。配置后重启 World 生效。', 'error');
+      }
+      return;
+    }
+
+    segment.windows++;
+    const wav = encodeWav(window.pcm);
+    const task = (async () => {
+      try {
+        const outcome = this.opts.analyze
+          ? await this.opts.analyze(wav, this.opts.cfg, key, this.opts.cfg.windowSec)
+          : await analyzeWithDashscope({ wav, cfg: this.opts.cfg, apiKey: key, windowSec: this.opts.cfg.windowSec });
+        if (outcome.error) {
+          segment.error = outcome.error;
+          this.lastError = outcome.error;
+          this.logger('warn', '窗口分析失败', { error: outcome.error });
+          return;
+        }
+        if (!outcome.analysis) return;
+        segment.analyses.push(outcome.analysis);
+        this.lastAnalysis = outcome.analysis;
+        this.logger('debug', '窗口分析完成', { summary: outcome.analysis.summary });
+        if (this.opts.cfg.mode === 'live' || this.opts.cfg.mode === 'both') {
+          await this.pushEvent('music.scene', formatAnalysis(outcome.analysis), {
+            origin: 'external',
+            meta: { windowStartedAt: window.startedAt, durationMs: window.durationMs, model: this.opts.cfg.model },
+          }, 'debounce');
+        }
+      } catch (e) {
+        segment.error = e instanceof Error ? e.message : String(e);
+        this.logger('warn', '窗口分析异常', { error: segment.error });
+      }
+    })();
+    segment.pending.push(task);
+  }
+
+  private async onSegmentEnd(end: SegmentEnd): Promise<void> {
+    const segment = this.segment;
+    this.segment = undefined;
+    if (!segment) return;
+    // 等已发出的窗口分析回来；最多等 65 秒，避免一段永远不结束。
+    await Promise.race([
+      Promise.allSettled(segment.pending),
+      new Promise((resolve) => setTimeout(resolve, 65_000)),
+    ]);
+    if (this.opts.cfg.backend === 'off') {
+      await this.pushState(`一段音乐结束了（约 ${Math.round(end.durationMs / 1000)} 秒）；分析后端关闭，没有分析。`);
+      return;
+    }
+    let text = combineAnalyses(segment.analyses, end.durationMs, this.opts.cfg.windowSec);
+    if (segment.error) text += `\n（这次有分析失败：${segment.error}）`;
+    await this.pushEvent('music.ended', text, {
+      origin: 'external',
+      meta: {
+        startedAt: end.startedAt,
+        endedAt: end.endedAt,
+        durationMs: end.durationMs,
+        windows: segment.windows,
+        analyses: segment.analyses.map((a) => a.summary),
+        model: this.opts.cfg.model,
+      },
+    }, 'flush');
+  }
+
+  private allowCall(): boolean {
+    const now = Date.now();
+    const limit = Math.max(1, this.opts.cfg.maxCallsPerMinute);
+    this.callTimes = this.callTimes.filter((t) => now - t < 60_000);
+    if (this.callTimes.length >= limit) return false;
+    this.callTimes.push(now);
+    return true;
+  }
+
+  private async pushState(text: string, level: 'info' | 'warn' | 'error' = 'info'): Promise<void> {
+    await this.pushEvent('music.state', text, { origin: 'internal', meta: { level } }, 'flush');
+  }
+
+  private async pushEvent(
+    type: string,
+    text: string,
+    extra?: { origin?: 'internal' | 'external'; meta?: Record<string, unknown>; blobs?: BlobInput[] },
+    trigger?: TriggerMode,
+  ): Promise<void> {
+    const host = this.host;
+    if (!host) return;
+    try {
+      await host.pushEvent({
+        type,
+        ts: nowIso(this.opts.timezone),
+        source: this.id,
+        origin: extra?.origin ?? 'external',
+        senderKey: this.id,
+        text,
+        meta: extra?.meta,
+        blobs: extra?.blobs,
+      }, trigger ? { trigger } : undefined);
+    } catch (e) {
+      this.logger('warn', '推送事件失败', { type, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  private watchTool(): ToolDef {
+    return {
+      ...MUSIC_TOOL_DECLS[0]!,
+      handler: async (args: Record<string, unknown>) => {
+        const action = String(args.action ?? '');
+        const mode = args.mode === 'end' || args.mode === 'live' || args.mode === 'both' ? args.mode : undefined;
+        if (action === 'start') {
+          if (mode) { this.opts.cfg.mode = mode; this.opts.persist({ mode }); }
+          if (!this.running) {
+            try {
+              this.startCapture();
+              await this.pushState('开始听系统声音。');
+            } catch (e) {
+              const message = e instanceof Error ? e.message : String(e);
+              this.lastError = message;
+              throw new Error('无法开始采集：' + message);
+            }
+          }
+          return this.statusText();
+        }
+        if (action === 'stop') {
+          const hadSegment = this.segmenter?.hasActiveSegment ?? false;
+          if (hadSegment) this.segmenter?.flush();
+          this.stopCapture();
+          this.segment = undefined;
+          await this.pushState('已停止听系统声音。');
+          return hadSegment ? '已停止；刚才那段会在分析完成后作为 music.ended 送来。' : '已停止。';
+        }
+        if (action === 'status') return this.statusText();
+        throw new Error('music_watch 需要 action = start / stop / status。');
+      },
+    };
+  }
+
+  private nowTool(): ToolDef {
+    return {
+      ...MUSIC_TOOL_DECLS[1]!,
+      handler: async () => {
+        const lines = [this.statusText()];
+        if (this.lastAnalysis) lines.push('最近一次分析：\n' + formatAnalysis(this.lastAnalysis));
+        else lines.push('还没拿到过分析。');
+        return lines.join('\n');
+      },
+    };
+  }
+
+  private modeTool(): ToolDef {
+    return {
+      ...MUSIC_TOOL_DECLS[2]!,
+      handler: async (args: Record<string, unknown>) => {
+        const mode = String(args.mode ?? '');
+        if (mode !== 'end' && mode !== 'live' && mode !== 'both') throw new Error('mode 只能是 end / live / both。');
+        this.opts.cfg.mode = mode;
+        this.opts.persist({ mode });
+        return `模式已切到 ${mode}。`;
+      },
+    };
+  }
+
+  private statusText(): string {
+    const cfg = this.opts.cfg;
+    const segment = this.segment;
+    const parts = [
+      this.running ? '正在听系统声音' : '没有在听',
+      `模式：${cfg.mode}`,
+      `后端：${cfg.backend}（${cfg.model}）`,
+    ];
+    if (segment) {
+      const sec = Math.round((Date.now() - segment.startedAt) / 1000);
+      parts.push(`当前一段：约 ${sec} 秒，已分析 ${segment.analyses.length} 个窗口`);
+    }
+    if (this.lastError) parts.push(`最近错误：${this.lastError}`);
+    return parts.join('\n');
+  }
+}
