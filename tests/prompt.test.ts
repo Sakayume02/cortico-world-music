@@ -20,6 +20,7 @@ const analysis: MusicAnalysis = {
   rhythm: '慢速',
   mood: { valence: -0.5, arousal: 0.3, quality: '克制的惆怅', confidence: 0.7 },
   lyrics: { present: true, text: '再见', confidence: 0.4, source: 'asr', complete: false },
+  reference: { work: '《诗经·蒹葭》', connection: '想见而见不到的距离感，和这首歌的离别情绪贴得上。', confidence: 0.7 },
   uncertain: ['人声是否真的出现'],
 };
 
@@ -31,6 +32,7 @@ describe('prompt', () => {
     expect(parsed.instruments[0]!.name).toBe('钢琴');
     expect(parsed.mood?.valence).toBeCloseTo(-0.5);
     expect(parsed.lyrics?.source).toBe('asr');
+    expect(parsed.reference?.work).toContain('蒹葭');
   });
 
   it('falls back to raw text when JSON is missing', () => {
@@ -45,6 +47,7 @@ describe('prompt', () => {
     expect(text).toContain('傍晚的空房间');
     expect(text).toContain('克制的惆怅');
     expect(text).toContain('动作参考');
+    expect(text).toContain('联想');
     expect(text).toContain('内部参考');
     expect(text).toContain('72 BPM');
   });
@@ -71,6 +74,8 @@ describe('prompt', () => {
     expect(all).toContain('LRCLIB');
     expect(all).toContain('别不说话我的亲爱');
     expect(all).toContain('动作参考');
+    expect(all).toContain('联想');
+    expect(all).toContain('蒹葭');
     expect(all).toContain('傻白甜');
     expect(all).toContain('内部参考');
     expect(all).toContain('不要照念');
@@ -83,5 +88,7 @@ describe('prompt', () => {
     expect(p).toContain('古筝');
     expect(p).toContain('尺八');
     expect(p).toContain('不要用「某调 = 某情绪」');
+    expect(p).toContain('贴切的历史典故');
+    expect(p).toContain('reference');
   });
 });

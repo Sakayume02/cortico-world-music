@@ -2,7 +2,7 @@
   "name": "cortico-world-music",
   "version": "0.2.0",
   "type": "module",
-  "description": "一起感受音乐——在用户明确要求后，和桌宠一起听电脑上的音乐：系统环回采集、播放器曲目信息与完整歌词、云端沉浸式感受；带一点大肥鱼的傻白甜，开心会傻乐走动，难过会安静发呆（只用现有动作），而不是报参数。只支持 Windows。",
+  "description": "一起感受音乐——在用户明确要求后，和桌宠一起听电脑上的音乐：系统环回采集、播放器曲目信息与完整歌词、云端沉浸式感受；支持自定义 OpenAI 兼容接口/模型和自己的 Key，听完一首可继续或停；带一点大肥鱼的傻白甜，开心会傻乐走动，难过会安静发呆（只用现有动作）。只支持 Windows。",
   "license": "MIT",
   "keywords": [
     "cortico-world",
@@ -33,10 +33,12 @@
       "sensitive-data",
       "experimental"
     ],
-    "describe": "describe.json"
+    "describe": "describe.json",
+    "webUiClient": "dist/webui.js"
   },
   "files": [
     "src",
+    "dist",
     "README.md",
     "PROJECT.md",
     "CHANGELOG.md",
@@ -44,8 +46,10 @@
     "LICENSE"
   ],
   "scripts": {
+    "build:webui": "node scripts/build-webui.mjs",
+    "prepare": "node scripts/build-webui.mjs",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.webui.json"
   },
   "dependencies": {
     "loopback-capture": "^3.0.2"
@@ -53,6 +57,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "cortico": "^0.2.7",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

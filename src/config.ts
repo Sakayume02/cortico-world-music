@@ -3,8 +3,8 @@ import type { ConfigGroup } from 'cortico/core/types.ts';
 /** config.json 的 worlds.music 段。默认禁用，由部署或 bot 开启。 */
 export interface MusicConfigSection {
   enabled: boolean;
-  /** 分析后端；v1 只有云端 DashScope，off 表示只采集不分析。 */
-  backend: 'dashscope' | 'off';
+  /** 分析后端；dashscope = 内置 Qwen-Omni，openai-compatible = 任意 OpenAI 兼容音频接口，off = 只采集。 */
+  backend: 'dashscope' | 'openai-compatible' | 'off';
   /** DashScope 的 OpenAI 兼容地址；不同工作空间可能要用自己的地址。 */
   baseUrl: string;
   /** 模型名；qwen3.8-omni-flash 支持音频理解并只输出文本。 */
@@ -13,6 +13,8 @@ export interface MusicConfigSection {
   apiKeySecret: string;
   /** 默认投递方式：一段结束总结 / 实时短评 / 两者都要。 */
   mode: 'end' | 'live' | 'both';
+  /** 一段结束后：继续听下一首，还是就此停止。 */
+  afterSong: 'continue' | 'stop';
   /** 每个分析窗口的秒数；上传前会降为 16k 单声道。 */
   windowSec: number;
   /** 每分钟最多几次云端分析，防止刷接口。 */
@@ -36,6 +38,7 @@ export const MUSIC_DEFAULTS: MusicConfigSection = {
   model: 'qwen3.8-omni-flash',
   apiKeySecret: 'AUDIO_API_KEY',
   mode: 'end',
+  afterSong: 'continue',
   windowSec: 30,
   maxCallsPerMinute: 4,
   screenFallback: false,
@@ -56,8 +59,8 @@ export const MUSIC_CONFIG_GROUP: ConfigGroup = {
       'worlds.music.backend': {
         type: 'string',
         title: '分析后端',
-        description: 'dashscope = 云端 Qwen-Omni；off = 只采集不分析。',
-        enum: ['dashscope', 'off'],
+        description: 'dashscope = 内置 Qwen-Omni；openai-compatible = 你自己的 OpenAI 兼容音频接口；off = 只采集不分析。',
+        enum: ['dashscope', 'openai-compatible', 'off'],
         'x-hot': true,
       },
       'worlds.music.baseUrl': {
@@ -83,6 +86,13 @@ export const MUSIC_CONFIG_GROUP: ConfigGroup = {
         title: '默认模式',
         description: 'end = 一段结束/暂停时总结；live = 每段短评；both = 两者都要。',
         enum: ['end', 'live', 'both'],
+        'x-hot': true,
+      },
+      'worlds.music.afterSong': {
+        type: 'string',
+        title: '听完一首后',
+        description: 'continue = 继续听下一首；stop = 这首结束就停止（总结后自动停）。',
+        enum: ['continue', 'stop'],
         'x-hot': true,
       },
       'worlds.music.windowSec': {

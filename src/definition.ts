@@ -17,6 +17,7 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
     timezone: ctx.timezone,
     dataDir: ctx.dataDir,
     secret: (name) => ctx.secret(name),
+    storeSecret: (name, value) => ctx.storeSecret(name, value),
     persist: (patch) => ctx.persist(patch),
   }),
   describe: {

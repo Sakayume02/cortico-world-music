@@ -93,6 +93,7 @@ function makeWorld(overrides: Partial<MusicWorldOptions> = {}): { world: MusicWo
     timezone: 'Asia/Shanghai',
     dataDir: scratch,
     secret: () => 'test-key',
+    storeSecret: () => {},
     persist: () => {},
     captureFactory: () => capture,
     analyze: async () => ({ analysis }),
@@ -215,5 +216,51 @@ describe('Music World', () => {
     expect(ui.config?.some((c) => c.id === 'world:music')).toBe(true);
     expect(ui.promptDocs?.some((p) => p.key === 'worlds.music.envPrompt')).toBe(true);
     expect(world.envPromptVars()['music.mode']).toBe('end');
+  });
+
+  it('exposes the settings panel and saves endpoint and key', async () => {
+    const captured = {
+      stored: null as { name: string; value: string } | null,
+      persisted: null as Partial<MusicConfigSection> | null,
+    };
+    const { world } = makeWorld({
+      storeSecret: (name, value) => { captured.stored = { name, value }; },
+      persist: (patch) => { captured.persisted = patch; },
+    });
+    const invoke = world.webUi().invoke!;
+    const state = await invoke('settings', 'state', []) as { hasKey: boolean };
+    expect(state.hasKey).toBe(true);
+
+    const saved = await invoke('settings', 'save', [{
+      backend: 'openai-compatible',
+      baseUrl: 'https://example.com/v1',
+      model: 'my-audio-model',
+      afterSong: 'stop',
+    }]) as { backend: string; afterSong: string };
+    expect(saved.backend).toBe('openai-compatible');
+    expect(saved.afterSong).toBe('stop');
+    expect(captured.persisted?.model).toBe('my-audio-model');
+
+    const keyState = await invoke('settings', 'save-key', [{ key: 'sk-test-123456' }]) as { hasKey: boolean };
+    expect(captured.stored?.name).toBe('AUDIO_API_KEY');
+    expect(captured.stored?.value).toBe('sk-test-123456');
+    expect(keyState.hasKey).toBe(true);
+  });
+
+  it('stops after one song when afterSong is stop', async () => {
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, afterSong: 'stop', windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+    capture.feed(tone(1.2));
+    await sleep(30);
+    capture.feed(silence(3));
+    await sleep(180);
+    expect(host.events.some((e) => e.type === 'music.ended')).toBe(true);
+    expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('听完这首就停'))).toBe(true);
+    expect(capture.cb).toBeNull();
+    await world.stop();
   });
 });

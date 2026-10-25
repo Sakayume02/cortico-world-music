@@ -45,6 +45,8 @@ export interface MusicAnalysis {
   structure?: string;
   mood?: MusicMood;
   lyrics?: { present: boolean; text: string; confidence: number; source?: LyricsSource; complete?: boolean };
+  /** 贴切的历史典故/名著联想；不贴切就不给。 */
+  reference?: { work: string; connection: string; confidence: number };
   uncertain?: string[];
   raw?: string;
 }
@@ -92,6 +94,7 @@ const SCHEMA = `{
   "structure": "重复/对比/发展/回归/段落感；没有就空",
   "mood": {"valence": 0.0, "arousal": 0.0, "quality": "情绪的质地，一句话", "confidence": 0.0},
   "lyrics": {"present": false, "text": "只写确实听清的短句；有可信歌词时照抄；听不清就空", "confidence": 0.0},
+  "reference": {"work": "贴切的历史典故/名著小说名；不贴切就空", "connection": "为什么贴切，一两句；不贴切就空", "confidence": 0.0},
   "uncertain": ["不确定的点"]
 }`;
 
@@ -106,7 +109,7 @@ export function buildAnalysisPrompt(
     ? `你正在听的曲目（来自播放器媒体信息）：${context.track}${context.artist ? ' — ' + context.artist : ''}。`
     : '';
   return [
-    '你是一个真正爱音乐的人，也是一个懂音乐的音乐人。你正在和老大一起听音乐。',
+    '你是一个真正爱音乐的人，也是一个懂音乐的音乐人。你正在和听音乐的人一起听音乐。',
     '先用身体和情绪去听，再用术语核对；术语只放在技术字段里给 bot 理解，不要写进 listenerSummary，也不要在感受里列参数。',
     '',
     '框架（Aaron Copland《如何听懂音乐》）：',
@@ -119,8 +122,11 @@ export function buildAnalysisPrompt(
     '- 感受要具体、有温度，不要套话；宁可说「像傍晚空房间里的一架旧钢琴」，不要写「情绪悲伤」。',
     '- 情绪要质地：不是「悲伤」，而是「克制的惆怅 / 哀而不伤 / 带微笑的悲伤」。',
     '- 纯音乐没有人声就写画面和身体，不要假装听到了歌词。',
+    '- **感受要贴着歌名和歌词想表达的内容与场景**：有可信歌名/歌词时，先理解它在说什么，再写感受；不要脱离歌词另编一个故事，也不要自己瞎猜人物/情节。',
+    '- 没有可信歌词、纯音乐或歌词听不清时，只写音乐本身的氛围和画面；不要把听错的词当成歌词内容。',
+    '- 可以联想贴切的历史典故或名著小说（国内外都行），但必须和歌词/情绪/场景对得上；不贴切就不写，不要掉书袋、不要编引文。',
     '',
-    '判断与术语（这些只给 bot 理解，不要照念给老大）：',
+    '判断与术语（这些只给 bot 理解，不要照念给用户）：',
     '- 先判断这段音频是不是音乐：歌曲、器乐、纯音乐、说唱伴奏算音乐；播客、有声书、直播里纯说话、ASMR 说话不算。不是音乐就把 isMusic 设为 false（仍返回完整 JSON），musicConfidence 给判断置信度。',
     '- 不要用「某调 = 某情绪」的硬映射；调式只是线索之一，必须结合速度、节奏、音色、力度、旋律一起判断。',
     '- 乐器必须从受控词表里选；不确定是古筝还是 koto、尺八还是箫时，给最可能的 1–2 个并标低置信度，不要默认钢琴。',
@@ -169,6 +175,9 @@ export function parseAnalysis(text: string): MusicAnalysis {
     : [];
   const moodObj = obj.mood && typeof obj.mood === 'object' ? obj.mood as Record<string, unknown> : undefined;
   const lyricsObj = obj.lyrics && typeof obj.lyrics === 'object' ? obj.lyrics as Record<string, unknown> : undefined;
+  const refObj = obj.reference && typeof obj.reference === 'object' ? obj.reference as Record<string, unknown> : undefined;
+  const refWork = refObj ? str(refObj.work) : undefined;
+  const refConnection = refObj ? str(refObj.connection) : undefined;
   return {
     summary: str(obj.summary) ?? '（模型没有给 summary）',
     listenerSummary: str(obj.listenerSummary),
@@ -200,6 +209,11 @@ export function parseAnalysis(text: string): MusicAnalysis {
       confidence: clamp(num(lyricsObj.confidence) ?? 0, 0, 1),
       source: 'asr',
       complete: false,
+    } : undefined,
+    reference: refWork && refConnection ? {
+      work: refWork,
+      connection: refConnection,
+      confidence: clamp(num(refObj?.confidence) ?? 0.4, 0, 1),
     } : undefined,
     uncertain: Array.isArray(obj.uncertain) ? obj.uncertain.filter((x): x is string => typeof x === 'string').slice(0, 10) : [],
     raw: typeof obj.raw === 'string' ? obj.raw : undefined,
@@ -256,6 +270,7 @@ export function formatAnalysis(a: MusicAnalysis, context?: ListeningContext): st
   if (a.imagery) lines.push('画面：' + a.imagery);
   if (a.body) lines.push('身体：' + a.body);
   if (a.arc) lines.push('走向：' + a.arc);
+  if (a.reference?.work && a.reference.connection) lines.push(`联想：${a.reference.work} —— ${a.reference.connection}`);
   lines.push('动作参考（用现有动作）：' + reactionHint(a));
   if (a.lyrics?.present && a.lyrics.text) {
     lines.push(`歌词（来源：${lyricsSourceLabel(a.lyrics.source)}）：${a.lyrics.text}`);
@@ -263,7 +278,7 @@ export function formatAnalysis(a: MusicAnalysis, context?: ListeningContext): st
   const tech = technicalLines(a);
   if (tech.length) {
     lines.push('');
-    lines.push('—— 内部参考（给 bot 理解音乐用，不要照念给老大）——');
+    lines.push('—— 内部参考（给 bot 理解音乐用，不要照念给用户）——');
     lines.push(tech.join('\n'));
   }
   return lines.join('\n');
@@ -284,6 +299,7 @@ export function combineAnalyses(
   const images = [...new Set(analyses.map((a) => a.imagery).filter((x): x is string => !!x))];
   const bodies = [...new Set(analyses.map((a) => a.body).filter((x): x is string => !!x))];
   const arcs = [...new Set(analyses.map((a) => a.arc).filter((x): x is string => !!x))];
+  const references = analyses.map((a) => a.reference).filter((r): r is NonNullable<MusicAnalysis['reference']> => !!r?.work && !!r.connection);
   const summaries = [...new Set(analyses.map((a) => a.summary).filter(Boolean))];
   const lyrics = [...new Set(analyses.map((a) => a.lyrics).filter((l): l is NonNullable<MusicAnalysis['lyrics']> => !!l?.present && !!l.text))];
   const uncertain = [...new Set(analyses.flatMap((a) => a.uncertain ?? []))];
@@ -302,6 +318,7 @@ export function combineAnalyses(
   if (images.length) lines.push('画面：' + [...new Set(images)].slice(-2).join(' / '));
   if (bodies.length) lines.push('身体：' + [...new Set(bodies)].slice(-2).join(' / '));
   if (arcs.length) lines.push('走向：' + arcs.slice(-1)[0]);
+  if (references.length) lines.push(`联想：${references[0]!.work} —— ${references[0]!.connection}`);
   lines.push('动作参考（用现有动作）：' + reactionHint(analyses[analyses.length - 1]!));
 
   if (context?.lyrics) {
@@ -321,7 +338,7 @@ export function combineAnalyses(
   if (uncertain.length) tech.push('不确定：' + uncertain.slice(0, 6).join('；'));
   if (tech.length) {
     lines.push('');
-    lines.push('—— 内部参考（给 bot 理解音乐用，不要照念给老大；不要报参数）——');
+    lines.push('—— 内部参考（给 bot 理解音乐用，不要照念给用户；不要报参数）——');
     lines.push(tech.join('\n'));
   }
   lines.push('');

@@ -1,7 +1,7 @@
 /**
  * 一起感受音乐：系统环回采集 → 静音/换歌判断 → 播放器信息/歌词 → 云端音频理解 → 事件与工具。
  *
- * 这个 World 默认待命，只有老大明确说要一起听音乐（bot 调 music_watch start）才开始采集。
+ * 这个 World 默认待命，只有用户明确说要一起听音乐（bot 调 music_watch start）才开始采集。
  * 事件正文先给「感受」，参数放在末尾的内部参考里，让 bot 用人的方式回应。
  */
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,7 @@ import type {
   BlobInput, ToolDef, TriggerMode, World, WorldHost, WorldWebUiDecl,
 } from 'cortico/core/types.ts';
 import { nowIso } from 'cortico/core/util.ts';
-import { MUSIC_CONFIG_GROUP, type MusicConfigSection } from './config.ts';
+import { MUSIC_CONFIG_GROUP, MUSIC_DEFAULTS, type MusicConfigSection } from './config.ts';
 import { MusicSegmenter, type SegmentEnd, type WindowChunk } from './segment.ts';
 import { encodeWav } from './wav.ts';
 import { combineAnalyses, formatAnalysis, type ListeningContext, type MusicAnalysis } from './prompt.ts';
@@ -68,6 +68,7 @@ export interface MusicWorldOptions {
   timezone: string;
   dataDir: string;
   secret(name: string): string;
+  storeSecret(name: string, value: string): void;
   persist(patch: Partial<MusicConfigSection>): void;
   captureFactory?: () => CaptureLike;
   analyze?: (wav: Uint8Array, cfg: MusicConfigSection, key: string, windowSec: number, context?: ListeningContext) => Promise<AnalysisOutcome>;
@@ -91,6 +92,16 @@ interface ActiveSegment {
 
 const EMPTY_INFO: ListeningInfo = { context: {} };
 
+interface SettingsState {
+  backend: string;
+  baseUrl: string;
+  model: string;
+  afterSong: string;
+  hasKey: boolean;
+  keyName: string;
+  models: string[];
+}
+
 export class MusicWorld implements World {
   readonly id = 'music';
 
@@ -113,6 +124,7 @@ export class MusicWorld implements World {
   envPromptVars(): Record<string, string> {
     return {
       'music.mode': this.opts.cfg.mode,
+      'music.afterSong': this.opts.cfg.afterSong,
       'music.backend': this.opts.cfg.backend,
       'music.model': this.opts.cfg.model,
     };
@@ -128,8 +140,14 @@ export class MusicWorld implements World {
       lamps: [{
         label: '一起听',
         state: this.running ? 'online' : this.lastError ? 'error' : 'offline',
-        hint: this.running ? (this.lastTrack ? `正在听 ${this.lastTrack}` : '正在听系统声音') : this.lastError || '待命：等老大明确说想一起听音乐',
+        hint: this.running ? (this.lastTrack ? `正在听 ${this.lastTrack}` : '正在听系统声音') : this.lastError || '待命：等用户明确说想一起听音乐',
       }],
+      panels: [{
+        id: 'settings',
+        title: '接口与密钥',
+        description: '选择分析后端/模型、填写接口地址和 API Key。密钥只写入部署 .env，不会回显。',
+      }],
+      invoke: (panel, method, args) => this.invokePanel(panel, method, args),
       config: [MUSIC_CONFIG_GROUP],
       promptDocs: [{
         key: 'worlds.music.envPrompt',
@@ -139,7 +157,8 @@ export class MusicWorld implements World {
         role: 'envPrompt',
         vars: [
           { name: 'music.mode', description: '当前默认模式：end / live / both。' },
-          { name: 'music.backend', description: '当前分析后端：dashscope / off。' },
+          { name: 'music.afterSong', description: '听完一首后：continue / stop。' },
+          { name: 'music.backend', description: '当前分析后端：dashscope / openai-compatible / off。' },
           { name: 'music.model', description: '当前云端模型名。' },
         ],
       }],
@@ -152,10 +171,10 @@ export class MusicWorld implements World {
       if (level === 'debug' && !this.opts.cfg.debug) return;
       try { host.log[level](message, data); } catch {}
     };
-    // 默认待命：不采集，等老大明确提出听音乐，bot 再调 music_watch start。
+    // 默认待命：不采集，等用户明确提出听音乐，bot 再调 music_watch start。
     this.running = false;
     this.lastError = '';
-    await this.pushState('待命：还没有开始听。等老大明确说想一起听音乐（比如“听首歌”“一起听”）时，再调用 music_watch start；不要自己开始。');
+    await this.pushState('待命：还没有开始听。等用户明确说想一起听音乐（比如“听首歌”“一起听”）时，再调用 music_watch start；不要自己开始。');
   }
 
   async stop(): Promise<void> {
@@ -387,6 +406,11 @@ export class MusicWorld implements World {
         lyricsSource: info.lyrics ? 'lrclib' : undefined,
       },
     }, 'flush');
+    if (this.opts.cfg.afterSong === 'stop') {
+      this.stopCapture();
+      this.lastTrack = '';
+      await this.pushState('按设置：听完这首就停，已经停止。想继续再让我听。');
+    }
   }
 
   private allowCall(): boolean {
@@ -485,12 +509,76 @@ export class MusicWorld implements World {
     };
   }
 
+  private panelState(): SettingsState {
+    const cfg = this.opts.cfg;
+    const keyName = cfg.apiKeySecret || 'AUDIO_API_KEY';
+    let hasKey = false;
+    try { hasKey = !!this.opts.secret(keyName); } catch {}
+    return {
+      backend: cfg.backend,
+      baseUrl: cfg.baseUrl,
+      model: cfg.model,
+      afterSong: cfg.afterSong,
+      hasKey,
+      keyName,
+      models: ['qwen3.8-omni-flash', 'qwen3-omni-flash', 'qwen-omni-turbo'],
+    };
+  }
+
+  private async saveSettings(raw: unknown): Promise<SettingsState> {
+    const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const backend = String(input.backend ?? this.opts.cfg.backend);
+    if (backend !== 'dashscope' && backend !== 'openai-compatible' && backend !== 'off') {
+      throw new Error('后端只能是 dashscope / openai-compatible / off。');
+    }
+    const baseUrl = String(input.baseUrl ?? this.opts.cfg.baseUrl).trim().replace(/\/+$/, '');
+    if (backend !== 'off' && !/^https?:\/\//i.test(baseUrl)) {
+      throw new Error('接口地址需要以 http:// 或 https:// 开头。');
+    }
+    const model = String(input.model ?? this.opts.cfg.model).trim();
+    if (backend !== 'off' && !model) throw new Error('模型名不能为空。');
+    const afterSong = String(input.afterSong ?? this.opts.cfg.afterSong);
+    if (afterSong !== 'continue' && afterSong !== 'stop') throw new Error('afterSong 只能是 continue / stop。');
+
+    this.opts.cfg.backend = backend as MusicConfigSection['backend'];
+    this.opts.cfg.baseUrl = baseUrl;
+    this.opts.cfg.model = model;
+    this.opts.cfg.afterSong = afterSong;
+    this.opts.persist({ backend: backend as MusicConfigSection['backend'], baseUrl, model, afterSong: afterSong as MusicConfigSection['afterSong'] });
+    return this.panelState();
+  }
+
+  private async saveKey(raw: unknown): Promise<SettingsState> {
+    const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const key = String(input.key ?? '').trim();
+    if (key.length < 8) throw new Error('API Key 太短，至少 8 个字符。');
+    this.opts.storeSecret(this.opts.cfg.apiKeySecret || 'AUDIO_API_KEY', key);
+    return this.panelState();
+  }
+
+  private async invokePanel(panel: string, method: string, args: unknown[]): Promise<unknown> {
+    if (panel !== 'settings') throw new Error('未知面板：' + panel);
+    if (method === 'state') return this.panelState();
+    if (method === 'save') return this.saveSettings(args[0]);
+    if (method === 'save-key') return this.saveKey(args[0]);
+    if (method === 'reset') {
+      return this.saveSettings({
+        backend: 'dashscope',
+        baseUrl: MUSIC_DEFAULTS.baseUrl,
+        model: MUSIC_DEFAULTS.model,
+        afterSong: this.opts.cfg.afterSong,
+      });
+    }
+    throw new Error('未知方法：' + method);
+  }
+
   private statusText(): string {
     const cfg = this.opts.cfg;
     const segment = this.segment;
     const parts = [
-      this.running ? '正在一起听系统声音' : '待命：还没有开始听（需要老大明确说想一起听音乐）',
+      this.running ? '正在一起听系统声音' : '待命：还没有开始听（需要用户明确说想一起听音乐）',
       `模式：${cfg.mode}`,
+      `听完一首：${cfg.afterSong === 'stop' ? '停止' : '继续听下一首'}`,
       `后端：${cfg.backend}（${cfg.model}）`,
     ];
     if (this.lastTrack) parts.push('当前曲目：' + this.lastTrack);

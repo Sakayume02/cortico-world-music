@@ -24,6 +24,13 @@
 
 它不会说：“本段 BPM 72，A 小调，钢琴置信度 0.95。”——这些只放在事件末尾的「内部参考」里，给它自己理解用。
 
+## 感受贴着歌，不瞎猜
+
+- 有播放器曲目/完整歌词时，先理解歌名和歌词在说什么，再说感受；不脱离歌词另编一个故事。
+- 浏览器/听不清/纯音乐：只写音乐本身的氛围和画面，不编人物/情节，不把听错的词当歌词。
+- 可以带一点**贴切的历史典故或名著小说**（国内外都行），但必须和歌词/情绪/场景对得上；不贴切就不说，不编引文，不掉书袋。
+- 总结也一样：先接住这首歌的内容/场景，再说感受；一个贴切的典故就够。
+
 ## 动作与互动（只用桌宠现有动作）
 
 它会跟着音乐动，但只做自己**确实会**的动作：
@@ -44,14 +51,28 @@
    corepack pnpm add <这个包目录>
    ```
 2. **重启 Coopanion**，在「World 总览」启用「一起感受音乐」。
-3. 在部署的 `.env` 里配置 DashScope Key（变量名默认 `AUDIO_API_KEY`）：
+3. 打开 World 页「一起感受音乐」→「**接口与密钥**」面板：
+   - 分析后端：DashScope / Qwen-Omni（推荐），或自己的 OpenAI 兼容音频接口；
+   - 模型：常用模型下拉，也可以自己填；
+   - 接口地址：默认 DashScope 的 OpenAI 兼容地址；
+   - API Key：填自己的，保存后写入部署 `.env`，页面不回显。
+   也可以直接编辑部署 `.env`（变量名默认 `AUDIO_API_KEY`）：
    ```
    AUDIO_API_KEY=sk-...
    ```
 4. 对桌宠说：**“一起听音乐”** / “听首歌” / “我们一起听”。它才会调用 `music_watch start` 开始听。
 5. 想停就说：**“停 / 不听了”**。它会先总结当前这一段，再停。
+   如果不想每次手动停，可以在面板/配置里把「听完一首后」设为 **stop**：一首结束、总结完就自动停；设为 **continue** 则继续听下一首。
 
 > 默认待命，不会因为环境里有声音就自己开始；这是有意的。
+
+## 接口、模型和 Key
+
+- **DashScope / Qwen-Omni**：默认；地址 `https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 `qwen3.8-omni-flash`（可换 `qwen3-omni-flash` / `qwen-omni-turbo`）。
+- **OpenAI 兼容接口**：填你自己的地址和模型；接口需要接受 OpenAI 兼容的 `input_audio` 音频输入、返回文本。Key 用自己的。
+- **关闭分析**：只采集、不调用云端；不产生感受事件。
+- 密钥写入部署 `.env`（变量名默认 `AUDIO_API_KEY`），页面只显示“已配置/未配置”，不会把 Key 读回来。
+- 换后端/模型/地址后立即生效；下一次窗口分析就会用新设置。
 
 ## 工作原理（简版）
 
@@ -74,8 +95,9 @@
 |---|---|---|
 | 必需 | **Coopanion**（Cortico Core） | 运行 World、把事件交给 bot、WebUI 配置 |
 | 必需 | **Windows 10/11** | WASAPI 系统环回（`loopback-capture`，随包安装） |
-| 必需 | **DashScope API Key** | Qwen-Omni 音频理解（按音频时长计费，30 秒约 210 音频 token） |
-| 必需 | 网络 | 调用 DashScope；播放器歌词时调用 LRCLIB |
+| 必需 | **分析 API Key** | DashScope 的 Key，或你自己的 OpenAI 兼容接口 Key |
+| 必需 | **分析模型** | 默认 Qwen-Omni；也可以在面板里换成你选的模型 |
+| 必需 | **网络** | 调用分析接口；播放器歌词时调用 LRCLIB |
 | 可选 | **桌面播放器**（网易云 / QQ 音乐 / Spotify / Media Player 等） | 通过 Windows 媒体会话给出准确曲目/歌手，查完整歌词 |
 | 可选 | **LRCLIB**（免费，无 Key） | 有曲目信息时提供完整歌词；服务不可用就退回听写 |
 | 可选 | 支持图片的模型 | 浏览器/未知来源时，屏幕截图兜底识别播放器 |
@@ -93,11 +115,12 @@
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `worlds.music.backend` | `dashscope` | 云端分析；`off` 只采集不分析 |
-| `worlds.music.baseUrl` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | OpenAI 兼容地址 |
-| `worlds.music.model` | `qwen3.8-omni-flash` | 支持音频输入、只输出文本的模型 |
-| `worlds.music.apiKeySecret` | `AUDIO_API_KEY` | 部署 .env 里的变量名 |
+| `worlds.music.backend` | `dashscope` | `dashscope`（Qwen-Omni）/ `openai-compatible`（自己的接口）/ `off` |
+| `worlds.music.baseUrl` | DashScope 兼容地址 | 接口地址；自定义后端时填自己的 |
+| `worlds.music.model` | `qwen3.8-omni-flash` | 模型名；也可在面板里从常用模型选 |
+| `worlds.music.apiKeySecret` | `AUDIO_API_KEY` | 部署 .env 里的变量名；面板写入这个变量 |
 | `worlds.music.mode` | `end` | `end` / `live` / `both` |
+| `worlds.music.afterSong` | `continue` | `continue` 继续听下一首；`stop` 一首结束就停 |
 | `worlds.music.windowSec` | `30` | 分析窗口秒数（15–60） |
 | `worlds.music.maxCallsPerMinute` | `4` | 限流 |
 | `worlds.music.screenFallback` | `false` | 无曲目信息时截屏给 bot 看 |
@@ -111,6 +134,7 @@
 - **end**（默认）：一段结束/暂停时，把整段的感受、画面、歌词交给 bot，让它说一段完整的。
 - **live**：每 30 秒左右给一段短评；适合边听边聊。
 - **both**：两者都要。
+- **afterSong**：`continue` = 继续听下一首；`stop` = 一首结束、总结完就自动停。可在面板/配置里选。
 
 ## 隐私与费用
 
