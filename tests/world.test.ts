@@ -12,6 +12,8 @@ import { FakeHost } from './helpers/fake-host.ts';
 
 const analysis: MusicAnalysis = {
   summary: '慢速钢琴，克制的惆怅。',
+  isMusic: true,
+  musicConfidence: 0.9,
   tempoBpm: 70,
   instruments: [{ name: '钢琴', confidence: 0.8 }],
   mood: { valence: -0.4, arousal: 0.3, quality: '克制的惆怅', confidence: 0.7 },
@@ -115,6 +117,28 @@ describe('Music World', () => {
     capture.feed(tone(1.2));
     await new Promise((r) => setTimeout(r, 30));
     expect(host.events.some((e) => e.type === 'music.scene')).toBe(false);
+    await world.stop();
+  });
+
+  it('drops audio that is not music', async () => {
+    const cfg: MusicConfigSection = { ...MUSIC_DEFAULTS, windowSec: 1, mode: 'end', maxCallsPerMinute: 10, screenFallback: false };
+    const capture = new FakeCapture();
+    const world = new MusicWorld({
+      cfg, timezone: 'Asia/Shanghai', dataDir: scratch,
+      secret: () => 'k', persist: () => {},
+      captureFactory: () => capture,
+      analyze: async () => ({ analysis: { ...analysis, isMusic: false, musicConfidence: 0.95, summary: '一段播客旁白' } }),
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    capture.feed(tone(1.2));
+    await new Promise((r) => setTimeout(r, 40));
+    capture.feed(silence(3));
+    await new Promise((r) => setTimeout(r, 120));
+    const types = host.events.map((e) => e.type);
+    expect(types).toContain('music.state');
+    expect(types).not.toContain('music.started');
+    expect(types).not.toContain('music.ended');
     await world.stop();
   });
 });

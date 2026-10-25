@@ -71,6 +71,10 @@ interface ActiveSegment {
   pending: Promise<void>[];
   windows: number;
   keyWarned: boolean;
+  confirmed?: boolean;
+  dropped?: boolean;
+  screenshot?: BlobInput;
+  note?: string;
   error?: string;
 }
 
@@ -180,7 +184,7 @@ export class MusicWorld implements World {
     const segment: ActiveSegment = { startedAt, analyses: [], pending: [], windows: 0, keyWarned: false };
     this.segment = segment;
 
-    let blob: BlobInput | undefined;
+    let screenshot: BlobInput | undefined;
     let note = '';
     if (this.opts.cfg.screenFallback) {
       const acceptsImage = this.host?.modelFacts.accepts('image/png') ?? false;
@@ -190,7 +194,7 @@ export class MusicWorld implements World {
         try {
           const shot = await (this.opts.screenCapture ?? (() => capturePrimaryScreen(this.opts.dataDir)))();
           if (shot) {
-            blob = { bytes: shot.bytes, mime: shot.mime, name: shot.name, fallbackText: '换歌时的主屏截图，用来识别播放器/歌名' };
+            screenshot = { bytes: shot.bytes, mime: shot.mime, name: shot.name, fallbackText: '换歌时的主屏截图，用来识别播放器/歌名' };
           } else {
             note = '（截屏失败，拿不到播放器画面。）';
           }
@@ -199,16 +203,10 @@ export class MusicWorld implements World {
         }
       }
     }
-
-    const lines = ['开始听到一段音乐（系统声音）。'];
-    if (blob) lines.push('附上一张当前屏幕截图，供你识别播放器/歌名；识别不出就只说听感。');
-    if (note) lines.push(note);
-    if (this.opts.cfg.backend === 'off') lines.push('分析后端关闭，这次只记录、不分析。');
-    await this.pushEvent('music.started', lines.join('\n'), {
-      origin: 'external',
-      meta: { startedAt, mode: this.opts.cfg.mode, backend: this.opts.cfg.backend, model: this.opts.cfg.model },
-      blobs: blob ? [blob] : undefined,
-    }, 'flush');
+    segment.screenshot = screenshot;
+    segment.note = note;
+    // 先不宣布“开始听音乐”：等第一个窗口确认它确实是音乐（不是直播说话/播客）再发 music.started。
+    this.logger('debug', '听到声音，等待第一个窗口确认是不是音乐', { screenFallback: this.opts.cfg.screenFallback });
   }
 
   private async onWindow(window: WindowChunk): Promise<void> {
@@ -243,6 +241,31 @@ export class MusicWorld implements World {
           return;
         }
         if (!outcome.analysis) return;
+        if (segment.dropped) return;
+        if (segment.confirmed === undefined) {
+          if (outcome.analysis.isMusic !== true) {
+            segment.confirmed = false;
+            segment.dropped = true;
+            this.logger('debug', '不是音乐，丢弃这一段', { summary: outcome.analysis.summary, confidence: outcome.analysis.musicConfidence });
+            return;
+          }
+          segment.confirmed = true;
+          const lines = ['开始听到一段音乐（系统声音）。已确认是音乐。'];
+          if (segment.screenshot) lines.push('附上开始时的屏幕截图，供你识别播放器/歌名；识别不出就只说听感。');
+          if (segment.note) lines.push(segment.note);
+          await this.pushEvent('music.started', lines.join('\n'), {
+            origin: 'external',
+            meta: {
+              startedAt: segment.startedAt,
+              mode: this.opts.cfg.mode,
+              backend: this.opts.cfg.backend,
+              model: this.opts.cfg.model,
+              musicConfidence: outcome.analysis.musicConfidence,
+            },
+            blobs: segment.screenshot ? [segment.screenshot] : undefined,
+          }, 'flush');
+          segment.screenshot = undefined;
+        }
         segment.analyses.push(outcome.analysis);
         this.lastAnalysis = outcome.analysis;
         this.logger('debug', '窗口分析完成', { summary: outcome.analysis.summary });
@@ -264,15 +287,15 @@ export class MusicWorld implements World {
     const segment = this.segment;
     this.segment = undefined;
     if (!segment) return;
+    if (segment.dropped || segment.confirmed !== true) {
+      this.logger('debug', '这一段没有确认是音乐，不总结');
+      return;
+    }
     // 等已发出的窗口分析回来；最多等 65 秒，避免一段永远不结束。
     await Promise.race([
       Promise.allSettled(segment.pending),
       new Promise((resolve) => setTimeout(resolve, 65_000)),
     ]);
-    if (this.opts.cfg.backend === 'off') {
-      await this.pushState(`一段音乐结束了（约 ${Math.round(end.durationMs / 1000)} 秒）；分析后端关闭，没有分析。`);
-      return;
-    }
     let text = combineAnalyses(segment.analyses, end.durationMs, this.opts.cfg.windowSec);
     if (segment.error) text += `\n（这次有分析失败：${segment.error}）`;
     await this.pushEvent('music.ended', text, {

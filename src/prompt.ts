@@ -18,6 +18,9 @@ export interface MusicMood {
 
 export interface MusicAnalysis {
   summary: string;
+  /** 这段音频是不是音乐（歌曲/器乐/纯音乐/说唱伴奏算；播客/有声书/直播说话不算）。 */
+  isMusic?: boolean;
+  musicConfidence?: number;
   tempoBpm?: number;
   meter?: string;
   key?: string;
@@ -51,6 +54,8 @@ export const INSTRUMENT_TAXONOMY: readonly string[] = [
 
 const SCHEMA = `{
   "summary": "一两句中文，先说听到了什么，再说像什么",
+  "isMusic": true,
+  "musicConfidence": 0.0,
   "tempoBpm": 0,
   "meter": "4/4 等；不确定就空",
   "key": "如 A、C#；不确定就空",
@@ -82,6 +87,7 @@ export function buildAnalysisPrompt(cfg: MusicConfigSection, windowSec: number):
     '- 乐器必须从受控词表里选；不确定是古筝还是 koto、尺八还是箫时，给最可能的 1–2 个并标低置信度，不要默认钢琴。',
     '- 歌词只写确实听清的短句（最多两句），听不清就 present=false、text 空；不要编造歌词。',
     '- 这是纯音乐或人声都可能；如果没有人声，lyrics.present=false。',
+    '- 先判断这段音频是不是音乐：歌曲、器乐、纯音乐、说唱伴奏算音乐；播客、有声书、直播里纯说话、ASMR 说话不算。不是音乐就把 isMusic 设为 false（仍返回完整 JSON），musicConfidence 给判断置信度。',
     '- 分析窗口约 ' + windowSec + ' 秒，看不到整首的段落就如实说。',
     hints ? '- 额外提示：' + hints : '',
     '',
@@ -121,6 +127,8 @@ export function parseAnalysis(text: string): MusicAnalysis {
   const lyricsObj = obj.lyrics && typeof obj.lyrics === 'object' ? obj.lyrics as Record<string, unknown> : undefined;
   return {
     summary: str(obj.summary) ?? '（模型没有给 summary）',
+    isMusic: obj.isMusic === true,
+    musicConfidence: clamp(num(obj.musicConfidence) ?? 0, 0, 1),
     tempoBpm: num(obj.tempoBpm),
     meter: str(obj.meter),
     key: str(obj.key),
