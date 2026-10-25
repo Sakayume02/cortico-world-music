@@ -142,6 +142,8 @@ describe('Music World', () => {
     expect(types).toContain('music.state');
     expect(types).toContain('music.started');
     expect(types).toContain('music.ended');
+    const started = host.events.find((e) => e.type === 'music.started')!;
+    expect(started.text).toContain('想动就动');
     const ended = host.events.find((e) => e.type === 'music.ended')!;
     expect(ended.text).toContain('傍晚的空房间');
     expect(ended.text).toContain('克制的惆怅');

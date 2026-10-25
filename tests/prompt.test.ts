@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { combineAnalyses, formatAnalysis, parseAnalysis, buildAnalysisPrompt, type MusicAnalysis } from '../src/prompt.ts';
+import { combineAnalyses, formatAnalysis, parseAnalysis, reactionHint, buildAnalysisPrompt, type MusicAnalysis } from '../src/prompt.ts';
 import { MUSIC_DEFAULTS } from '../src/config.ts';
 
 const analysis: MusicAnalysis = {
@@ -44,8 +44,19 @@ describe('prompt', () => {
     expect(text).toContain('【这段的感受】');
     expect(text).toContain('傍晚的空房间');
     expect(text).toContain('克制的惆怅');
+    expect(text).toContain('动作参考');
     expect(text).toContain('内部参考');
     expect(text).toContain('72 BPM');
+  });
+
+  it('suggests only existing actions by mood', () => {
+    expect(reactionHint(analysis)).toContain('坐着发呆');
+    const happy: MusicAnalysis = {
+      ...analysis,
+      mood: { valence: 0.8, arousal: 0.8, quality: '开心得想跳', confidence: 0.8 },
+    };
+    expect(reactionHint(happy)).toContain('在屏幕底边走动');
+    expect(reactionHint(happy)).toContain('开心');
   });
 
   it('combines with trusted lyrics and keeps parameters internal', () => {
@@ -59,6 +70,8 @@ describe('prompt', () => {
     expect(all).toContain('记忆点');
     expect(all).toContain('LRCLIB');
     expect(all).toContain('别不说话我的亲爱');
+    expect(all).toContain('动作参考');
+    expect(all).toContain('傻白甜');
     expect(all).toContain('内部参考');
     expect(all).toContain('不要照念');
   });

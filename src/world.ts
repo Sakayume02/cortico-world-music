@@ -301,7 +301,7 @@ export class MusicWorld implements World {
           const trackLine = info.context.track
             ? `开始一起听：${info.context.track}${info.context.artist ? ' — ' + info.context.artist : ''}（来自播放器媒体信息）。`
             : '开始听到一段音乐（系统声音）。';
-          const lines = [trackLine, '先别急着报参数，跟着听；结束/暂停时再说你听到了什么、想到了什么。'];
+          const lines = [trackLine, '先别急着报参数，跟着听；想动就动，用你现有的动作；不想动就安静听。结束/暂停时再说你听到了什么、想到了什么。'];
 
           let screenshot: BlobInput | undefined;
           let note = '';

@@ -226,6 +226,25 @@ function technicalLines(a: MusicAnalysis): string[] {
   return facts;
 }
 
+/**
+ * 给 bot 的动作参考。只用桌宠现有的动作/表情；没有对应动作时用最接近的现有动作 + 表情/文字，
+ * 不要凭空写「跳了一支舞」「真的流泪了」。
+ */
+export function reactionHint(a: MusicAnalysis): string {
+  const valence = a.mood?.valence ?? 0;
+  const arousal = a.mood?.arousal ?? 0.35;
+  if (valence > 0.25 && arousal > 0.5) {
+    return '开心、想动：有跳舞/跑动动作就用，没有就用【在屏幕底边走动】+开心表情+颜文字，别写不存在的动作。';
+  }
+  if (valence < -0.2 && arousal < 0.55) {
+    return '安静、有点难过：有哭/委屈表情就用，没有就用【坐着发呆】+😢/🥲，别硬逗，也别假装真的流泪。';
+  }
+  if (arousal > 0.62) {
+    return '节奏有推动力：可以轻轻晃/点头，用现有动作。';
+  }
+  return '适合安静听、轻轻晃；用现有动作。';
+}
+
 /** 一个窗口的正文：先感受，后内部参考。 */
 export function formatAnalysis(a: MusicAnalysis, context?: ListeningContext): string {
   const lines: string[] = [];
@@ -237,6 +256,7 @@ export function formatAnalysis(a: MusicAnalysis, context?: ListeningContext): st
   if (a.imagery) lines.push('画面：' + a.imagery);
   if (a.body) lines.push('身体：' + a.body);
   if (a.arc) lines.push('走向：' + a.arc);
+  lines.push('动作参考（用现有动作）：' + reactionHint(a));
   if (a.lyrics?.present && a.lyrics.text) {
     lines.push(`歌词（来源：${lyricsSourceLabel(a.lyrics.source)}）：${a.lyrics.text}`);
   }
@@ -282,6 +302,7 @@ export function combineAnalyses(
   if (images.length) lines.push('画面：' + [...new Set(images)].slice(-2).join(' / '));
   if (bodies.length) lines.push('身体：' + [...new Set(bodies)].slice(-2).join(' / '));
   if (arcs.length) lines.push('走向：' + arcs.slice(-1)[0]);
+  lines.push('动作参考（用现有动作）：' + reactionHint(analyses[analyses.length - 1]!));
 
   if (context?.lyrics) {
     lines.push('');
@@ -304,6 +325,6 @@ export function combineAnalyses(
     lines.push(tech.join('\n'));
   }
   lines.push('');
-  lines.push('用你刚才听的时候的感受说，像一个人，不要像分析报告。');
+  lines.push('用你平时那种傻白甜的语气说，像一个人，可以带一个现有动作；不要像分析报告，也不要念内部参考。');
   return lines.join('\n');
 }
