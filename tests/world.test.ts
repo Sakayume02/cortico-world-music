@@ -271,6 +271,7 @@ describe('Music World', () => {
     expect(sw!.text).toContain('第一首');
     expect(sw!.text).toContain('第二首');
     expect(host.pushOpts[host.events.indexOf(sw!)]?.trigger).toBe('interrupt');
+    expect(host.withdrawn.length).toBeGreaterThan(0);
     await world.stop();
   });
 

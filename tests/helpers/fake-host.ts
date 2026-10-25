@@ -4,6 +4,7 @@ import type { EventEnvelope, PushOptions, WorldHost } from 'cortico/core/types.t
 export class FakeHost implements WorldHost {
   events: EventEnvelope[] = [];
   pushOpts: Array<PushOptions | undefined> = [];
+  withdrawn: number[] = [];
   pushDeferred(): void {}
   store = {
     get: () => undefined,
@@ -29,6 +30,10 @@ export class FakeHost implements WorldHost {
     this.events.push(full);
     this.pushOpts.push(opts);
     return full;
+  }
+  async withdrawPending(cursor: number): Promise<boolean> {
+    this.withdrawn.push(cursor);
+    return true;
   }
   async drainPendingEvents(): Promise<EventEnvelope[]> { return []; }
   reportUsage(): void {}
