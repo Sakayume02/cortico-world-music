@@ -178,9 +178,9 @@ export class MusicWorld implements World {
     return {
       label: '你的音乐搭子',
       lamps: [{
-        label: '一起听',
+        label: '音乐搭子',
         state: this.running ? 'online' : this.lastError ? 'error' : 'offline',
-        hint: this.running ? (this.lastTrack ? `正在听 ${this.lastTrack}` : '正在听系统声音') : this.lastError || '待命：等用户明确说想一起听音乐',
+        hint: this.running ? (this.lastTrack ? `正在听 ${this.lastTrack}` : '正在听系统声音') : this.lastError || '待命：等用户明确说想听音乐',
       }],
       panels: [{
         id: 'settings',
@@ -220,7 +220,7 @@ export class MusicWorld implements World {
     this.pendingTrackMeta = undefined;
     this.playerPaused = false;
     this.lastPauseAt = 0;
-    await this.pushState('待命：还没有开始听。等用户明确说想一起听音乐（比如“听首歌”“一起听”）时，再调用 music_watch start；不要自己开始。');
+    await this.pushState('待命：还没有开始听。等用户明确说想听音乐（比如“听首歌”“一起听”）时，再调用 music_watch start；不要自己开始。');
   }
 
   async stop(): Promise<void> {
@@ -391,7 +391,7 @@ export class MusicWorld implements World {
     if (!this.running) return;
     const minutes = Math.max(1, Math.round((Date.now() - this.listeningStartedAt) / 60_000));
     const track = this.lastTrack ? `当前：${this.lastTrack}` : '在听系统声音';
-    await this.pushState(`【在听】${track}；已经一起听了约 ${minutes} 分钟。`, 'info', { heartbeat: true });
+    await this.pushState(`【在听】${track}；已经听了约 ${minutes} 分钟。`, 'info', { heartbeat: true });
   }
 
   private stopHeartbeat(): void {
@@ -405,7 +405,7 @@ export class MusicWorld implements World {
   private async pushReminder(): Promise<void> {
     if (!this.running) return;
     const minutes = Math.max(1, Math.round((Date.now() - this.listeningStartedAt) / 60_000));
-    await this.pushState(`已经一起听了 ${minutes} 分钟；想停就说停，想继续就接着听。`, 'info', { reminder: true, minutes });
+    await this.pushState(`已经听了 ${minutes} 分钟；想停就说停，想继续就接着听。`, 'info', { reminder: true, minutes });
   }
 
   private stopReminder(): void {
@@ -556,7 +556,7 @@ export class MusicWorld implements World {
     const browser = info.context.sourceKind === 'browser';
     const player = info.context.sourceKind === 'player';
     const trackLine = track
-      ? `开始一起听：${track}${artist ? ' — ' + artist : ''}（来自播放器媒体信息）。`
+      ? `开始听：${track}${artist ? ' — ' + artist : ''}（来自播放器媒体信息）。`
       : browser
         ? `浏览器在放：${tabTitle ?? '标签页标题没拿到'}${sourceApp ? `（${sourceApp}）` : ''}；这只是标签页参考，不是已确认歌名。`
         : player
@@ -971,7 +971,7 @@ export class MusicWorld implements World {
             this.startCapture();
             await this.pushState(wasRunning
               ? '重新开始听新的一轮；上一轮的音乐任务已经丢掉。'
-              : '开始一起听系统声音。');
+              : '开始听系统声音。');
           } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
             this.lastError = message;
@@ -984,7 +984,7 @@ export class MusicWorld implements World {
           if (hadSegment) this.segmenter?.flush();
           this.stopCapture();
           this.segment = undefined;
-          await this.pushState('已停止一起听。');
+          await this.pushState('已停止听。');
           return hadSegment ? '已停止；刚才那段会在分析完成后作为 music.ended 送来。' : '已停止。';
         }
         if (action === 'status') return this.statusText();
@@ -1102,7 +1102,7 @@ export class MusicWorld implements World {
     const cfg = this.opts.cfg;
     const segment = this.segment;
     const parts = [
-      this.running ? '正在一起听系统声音' : '待命：还没有开始听（需要用户明确说想一起听音乐）',
+      this.running ? '正在听系统声音' : '待命：还没有开始听（需要用户明确说想听音乐）',
       `模式：${cfg.mode}`,
       cfg.reminderMinutes > 0 ? `时长提醒：每 ${cfg.reminderMinutes} 分钟` : '时长提醒：关闭',
       `后端：${cfg.backend}（${cfg.model}）`,

@@ -357,7 +357,7 @@ describe('Music World', () => {
     const host = new FakeHost();
     await world.start(host);
     const first = await startListening(world);
-    expect(first).toContain('正在一起听');
+    expect(first).toContain('正在听');
     capture.feed(tone(1.2));
     await sleep(60);
     expect(host.events.some((e) => e.type === 'music.scene')).toBe(true);
@@ -502,7 +502,7 @@ describe('Music World', () => {
       }
       capture.feed(tone(1.2));
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('已经一起听了'))).toBe(true);
+      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('已经听了'))).toBe(true);
       await world.stop();
     } finally {
       vi.useRealTimers();
