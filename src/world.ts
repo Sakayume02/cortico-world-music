@@ -12,7 +12,7 @@ import { nowIso } from 'cortico/core/util.ts';
 import { MUSIC_CONFIG_GROUP, MUSIC_DEFAULTS, type MusicConfigSection } from './config.ts';
 import { MusicSegmenter, type SegmentEnd, type WindowChunk } from './segment.ts';
 import { encodeWav } from './wav.ts';
-import { combineAnalyses, formatAnalysis, type ListeningContext, type MusicAnalysis } from './prompt.ts';
+import { combineAnalyses, formatAnalysis, styleShift, type ListeningContext, type MusicAnalysis } from './prompt.ts';
 import { analyzeWithDashscope, type AnalysisOutcome } from './analysis.ts';
 import { capturePrimaryScreen, type ScreenShot } from './screen.ts';
 import { SystemAudioCapture, type CaptureLike } from './capture.ts';
@@ -90,6 +90,8 @@ interface ActiveSegment {
   startedPushed?: boolean;
   sceneCursors: number[];
   error?: string;
+  /** 风格突变后最后一次排查播放器信息的时间，防止连续窗口反复截图。 */
+  lastRecheckAt?: number;
   /** 先解析出曲目（不等歌词），让报幕/换歌尽快发出。 */
   trackPromise?: Promise<ListeningInfo>;
   infoPromise?: Promise<ListeningInfo>;
@@ -295,7 +297,7 @@ export class MusicWorld implements World {
     this.silenceTimer.unref?.();
     this.listeningStartedAt = Date.now();
     this.stopHeartbeat();
-    this.heartbeatTimer = setInterval(() => { void this.pushHeartbeat(); }, 120_000);
+    this.heartbeatTimer = setInterval(() => { void this.pushHeartbeat(); }, 60_000);
     this.heartbeatTimer.unref?.();
     this.stopMetadataPoll();
     if (this.opts.cfg.readPlayerMeta) {
@@ -347,7 +349,7 @@ export class MusicWorld implements World {
     }
   }
 
-  /** 每两分钟给 bot 一条【在听】状态，让它有机会冒一个很小的气泡。 */
+  /** 每分钟给 bot 一条【在听】状态：让它定期冒一个很小的“还在听”，用户能看到持续提示。 */
   private async pushHeartbeat(): Promise<void> {
     if (!this.running) return;
     const minutes = Math.max(1, Math.round((Date.now() - this.listeningStartedAt) / 60_000));
@@ -422,7 +424,21 @@ export class MusicWorld implements World {
     }
   }
 
-  /** 曲目已知时，一开始就报幕（不等第一个 30 秒窗口）。 */
+  /** 截一张主屏，给 bot 确认播放器/歌名；拿不到就返回说明。 */
+  private async captureScreen(): Promise<{ blob?: BlobInput; note?: string }> {
+    if (!this.opts.cfg.screenFallback) return {};
+    const acceptsImage = this.host?.modelFacts.accepts('image/png') ?? false;
+    if (!acceptsImage) return { note: '（当前模型不接受图片，无法用截图识别播放器。）' };
+    try {
+      const shot = await (this.opts.screenCapture ?? (() => capturePrimaryScreen(this.opts.dataDir)))();
+      if (!shot) return { note: '（截屏失败，拿不到播放器画面。）' };
+      return { blob: { bytes: shot.bytes, mime: shot.mime, name: shot.name, fallbackText: '确认是音乐时的主屏截图，用来识别播放器/歌名' } };
+    } catch {
+      return { note: '（截屏失败，拿不到播放器画面。）' };
+    }
+  }
+
+  /** 曲目已知时，一开始就报幕（不等第一个窗口）。信息来自窗口标题时附截图确认。 */
   private async pushStarted(segment: ActiveSegment, info: ListeningInfo): Promise<void> {
     const track = info.context.track;
     const artist = info.context.artist;
@@ -434,23 +450,15 @@ export class MusicWorld implements World {
       : '先用一句话报个幕：“新的一首，我来听一下；歌名还没认出来。” 不要硬报歌名。';
     const lines = [trackLine, announce, '跟着听；想动就动，用现有动作；不想动就安静听。听歌时别打盹/睡觉，专注一点。结束/暂停时再说感受。'];
 
+    const uncertain = !track || info.meta?.status === 'window-title';
     let screenshot: BlobInput | undefined;
     let note = '';
-    if (!track && this.opts.cfg.screenFallback) {
-      const acceptsImage = this.host?.modelFacts.accepts('image/png') ?? false;
-      if (!acceptsImage) {
-        note = '（当前模型不接受图片，无法用截图识别播放器。）';
-      } else {
-        try {
-          const shot = await (this.opts.screenCapture ?? (() => capturePrimaryScreen(this.opts.dataDir)))();
-          if (shot) screenshot = { bytes: shot.bytes, mime: shot.mime, name: shot.name, fallbackText: '确认是音乐时的主屏截图，用来识别播放器/歌名' };
-          else note = '（截屏失败，拿不到播放器画面。）';
-        } catch {
-          note = '（截屏失败，拿不到播放器画面。）';
-        }
-      }
+    if (uncertain) {
+      const shot = await this.captureScreen();
+      screenshot = shot.blob;
+      note = shot.note ?? '';
     }
-    if (screenshot) lines.push('附一张当前屏幕，供你识别播放器/歌名；识别不出就只说听感。');
+    if (screenshot) lines.push('附一张当前屏幕，供你确认播放器/歌名；如果播放器信息和屏幕不一致，以屏幕为准；识别不出就只说听感。');
     if (note) lines.push(note);
     if (info.lyrics) lines.push('已经拿到完整可信歌词（LRCLIB），歌词不用你听写；引用只引短句。');
 
@@ -466,6 +474,7 @@ export class MusicWorld implements World {
         track,
         artist,
         album: info.context.album,
+        trackSource: info.meta?.status,
         lyricsSource: info.lyrics ? 'lrclib' : undefined,
       },
       blobs: screenshot ? [screenshot] : undefined,
@@ -494,6 +503,14 @@ export class MusicWorld implements World {
       '先用一两句话把上一首收个尾（只取感受/歌词/主旨，不要念内部参考）；然后报新歌：' + announce,
       '不要继续上一首的细节；如果上一首已经收过尾，就只报新歌。',
     ];
+    const uncertain = !track || info.meta?.status === 'window-title';
+    let screenshot: BlobInput | undefined;
+    if (uncertain) {
+      const shot = await this.captureScreen();
+      screenshot = shot.blob;
+      if (screenshot) lines.push('附一张当前屏幕，供你确认新歌；如果播放器信息和屏幕不一致，以屏幕为准。');
+      else if (shot.note) lines.push(shot.note);
+    }
     this.lastTrack = [track, artist].filter(Boolean).join(' — ');
     segment.startedPushed = true;
     await this.pushEvent('music.switch', lines.join('\n'), {
@@ -504,8 +521,10 @@ export class MusicWorld implements World {
         track,
         artist,
         album: info.context.album,
+        trackSource: info.meta?.status,
         model: this.opts.cfg.model,
       },
+      blobs: screenshot ? [screenshot] : undefined,
     }, 'interrupt');
   }
 
@@ -592,6 +611,10 @@ export class MusicWorld implements World {
         segment.analyses.push(outcome.analysis);
         this.lastAnalysis = outcome.analysis;
         this.logger('debug', '窗口分析完成', { summary: outcome.analysis.summary, title: info.context.track });
+        const prevAnalysis = segment.analyses.length > 1 ? segment.analyses[segment.analyses.length - 2] : undefined;
+        if (prevAnalysis && styleShift(prevAnalysis, outcome.analysis)) {
+          void this.recheckStyle(segment, info);
+        }
         if (this.opts.cfg.mode === 'live' || this.opts.cfg.mode === 'both') {
           const scene = await this.pushEvent('music.scene', formatAnalysis(outcome.analysis, info.context), {
             origin: 'external',
@@ -605,6 +628,47 @@ export class MusicWorld implements World {
       }
     })();
     segment.pending.push(task);
+  }
+
+  /** 风格/音调突变时再确认一次播放器：变了就切段报新歌；没变不反应；没有播放器信息就截图让 bot 确认。 */
+  private async recheckStyle(segment: ActiveSegment, info: ListeningInfo): Promise<void> {
+    if (!this.running || this.segment !== segment || segment.dropped || segment.superseded) return;
+    const now = Date.now();
+    if (now - (segment.lastRecheckAt ?? 0) < 30_000) return;
+    segment.lastRecheckAt = now;
+
+    let meta: PlayerMeta | null = null;
+    try {
+      meta = this.opts.metadataReader ? await this.opts.metadataReader() : await readPlayerMetadata();
+    } catch {
+      meta = null;
+    }
+    if (meta) {
+      const key = `${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
+      if (key === this.polledTrackKey) {
+        this.logger('debug', '风格/音调变了，但播放器曲目没变，不反应', { track: info.context.track });
+        return;
+      }
+      this.polledTrackKey = key;
+      this.pendingTrackMeta = { meta, at: now };
+      this.logger('debug', '风格/音调突变且曲目变了，强制切段', { to: `${meta.artist ?? ''} ${meta.title}`.trim() });
+      this.segmenter?.flush();
+      return;
+    }
+
+    // 没有播放器信息：截图让 bot 自己确认，不直接报切歌。
+    const shot = await this.captureScreen();
+    const lines = [
+      '【风格/音调突变】刚才这段音乐的风格或调式突然变了，可能已经切歌。',
+      shot.blob
+        ? '附一张当前屏幕，请确认现在播放的是什么：如果换成新歌，就直接报新歌；如果还是同一首，就继续听，不要硬说切歌。'
+        : '没有播放器信息，也拿不到截图；先不要硬说切歌，继续听。',
+    ];
+    await this.pushEvent('music.state', lines.join('\n'), {
+      origin: 'internal',
+      meta: { recheck: true, track: info.context.track },
+      blobs: shot.blob ? [shot.blob] : undefined,
+    }, 'flush');
   }
 
   private onSegmentEnd(end: SegmentEnd): void {

@@ -316,7 +316,7 @@ describe('Music World', () => {
 
   it('stops after one song when afterSong is stop', async () => {
     const { world, capture } = makeWorld({
-      cfg: { ...MUSIC_DEFAULTS, afterSong: 'stop', windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+      cfg: { ...MUSIC_DEFAULTS, afterSong: 'stop', windowSec: 1, mode: 'end', maxCallsPerMinute: 10, screenFallback: false, readPlayerMeta: false, lookupLyrics: false },
     });
     const host = new FakeHost();
     await world.start(host);

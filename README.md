@@ -135,7 +135,8 @@
 - **桌面播放器**：从 Windows 媒体会话（GSMTC）读歌名、歌手；有准确信息时去 [LRCLIB](https://lrclib.net) 查完整歌词。查到了就是「完整可信」，bot 可以引用短句；查不到就退回听写。
 - **浏览器 / 来源未知**：不读媒体会话，按音频听写；只听清多少写多少，听不清就空着。bot 会被要求保守，不编歌词。
 - **纯音乐**：不假装有人声。
-- 截图兜底（默认关闭）：没有曲目信息、且你开启时，截一张主屏给 bot 看播放器界面；浏览器裸播放页可能没有标题，识别不出就只说听感。
+- 截图兜底（默认开启）：没有曲目信息、或曲目信息来自窗口标题（不太可靠）时，截一张主屏给 bot 确认；如果播放器信息和屏幕不一致，以屏幕为准；识别不出就只说听感。
+- 风格/音调突变时再确认一次：有播放器信息的，重新读曲目，变了马上切段/报新歌，没变不反应；没有播放器信息的，截图让 bot 确认。
 
 ## 配置（WebUI「一起感受音乐」页）
 
@@ -145,29 +146,28 @@
 | `worlds.music.baseUrl` | DashScope 兼容地址 | 面板：接口地址 |
 | `worlds.music.model` | `qwen3.8-omni-flash` | 面板：模型名 |
 | `worlds.music.apiKeySecret` | `AUDIO_API_KEY` | 面板：写入的 .env 变量名 |
-| `worlds.music.mode` | `end` | 配置页：`end` / `live` / `both` |
+| `worlds.music.mode` | `both` | 配置页：`end` / `live` / `both` |
 | `worlds.music.afterSong` | `continue` | 配置页：`continue` / `stop` |
-| `worlds.music.windowSec` | `30` | 分析窗口秒数（15–60） |
-| `worlds.music.maxCallsPerMinute` | `4` | 限流 |
-| `worlds.music.screenFallback` | `false` | 无曲目信息时截屏给 bot 看 |
+| `worlds.music.windowSec` | `20` | 分析窗口秒数（15–60） |
+| `worlds.music.maxCallsPerMinute` | `3` | 限流 |
+| `worlds.music.screenFallback` | `true` | 曲目缺失/不确定时截屏给 bot 确认 |
 | `worlds.music.readPlayerMeta` | `true` | 读桌面播放器的媒体会话 |
 | `worlds.music.lookupLyrics` | `true` | 有曲目信息时查 LRCLIB |
-| `worlds.music.instrumentHints` | 空 | 额外乐器提示 |
 | `worlds.music.debug` | `false` | 调试日志 |
 
 ## 模式
 
-- **end**（默认）：一段结束/暂停时，把整段的感受、画面、歌词交给 bot，让它说一段完整的。
-- **live**：每 30 秒左右给一段短评；适合边听边聊。
-- **both**：两者都要。
+- **end**：一段结束/暂停时，把整段的感受、画面、歌词交给 bot，让它说一段完整的。
+- **live**：每 20 秒左右给一段短评；适合边听边聊。
+- **both**（默认）：两者都要。
 - **afterSong**：`continue` = 一直听，直到你说停；`stop` = 一首结束、总结完就自动停。在配置页选。
 
 ## 隐私与费用
 
 - 只有你明确说“一起听”之后才开始采集；说停就停。
-- 上传 DashScope 的是 **16kHz 单声道 WAV 片段**（约 30 秒），不是整首、不是原始 48k。
+- 上传 DashScope 的是 **16kHz 单声道 WAV 片段**（约 20 秒），不是整首、不是原始 48k。
 - 播放器曲目信息只用于查歌词；LRCLIB 只收到歌名/歌手，不收到音频。
-- 截图兜底默认关闭；开启后会截主屏，可能包含屏幕上的其他内容。
+- 截图兜底默认开启；曲目缺失/不确定时会截主屏，可能包含屏幕上的其他内容。
 - 费用按 DashScope 音频 token 计；World 自身不额外上报模型费用。可用 `backend=off` 只采集不分析。
 
 ## 已知限制
@@ -177,8 +177,8 @@
 - **乐器**：云端模型对国风/日风小众乐器仍可能混淆；提示词要求不确定就说“像/可能”，不硬认。
 - **歌曲背景**：年代/出处/场景来自模型知识，不确定就不说；没有额外的歌曲数据库，查不到不硬编。
 - **桌宠自己的 TTS** 会被系统环回录进去；听音乐时建议关掉朗读，或让 bot 忽略自己的声音。
-- 纯打击乐、太吵、太短的片段置信度会低；默认 `end` 模式要等静音 2.5 秒才收段。
-- 连续 DJ/串烧没有静音时不会自动切歌。
+- 纯打击乐、太吵、太短的片段置信度会低；默认 `both` 模式要等静音 2.5 秒才收段。
+- 连续 DJ/串烧没有静音、也没有播放器曲目切换时，仍可能不切段；有播放器信息时 3 秒轮询能发现切歌。
 
 ## 开发
 

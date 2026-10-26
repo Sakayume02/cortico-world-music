@@ -19,14 +19,12 @@ export interface MusicConfigSection {
   windowSec: number;
   /** 每分钟最多几次云端分析，防止刷接口。 */
   maxCallsPerMinute: number;
-  /** 换歌时没有媒体信息，是否截一张屏幕给 bot 看播放器界面。 */
+  /** 换歌时没有媒体信息或信息不确定，是否截一张屏幕给 bot 看播放器界面。 */
   screenFallback: boolean;
   /** 是否从 Windows 媒体会话读桌面播放器的曲目/歌手（浏览器不走这条）。 */
   readPlayerMeta: boolean;
   /** 有准确曲目信息时，是否去 LRCLIB 查完整歌词。 */
   lookupLyrics: boolean;
-  /** 额外的乐器提示（自由文本，会拼进分析提示词）。 */
-  instrumentHints: string;
   /** 在运行日志里记录每段分析的调试信息。 */
   debug: boolean;
 }
@@ -37,14 +35,13 @@ export const MUSIC_DEFAULTS: MusicConfigSection = {
   baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   model: 'qwen3.8-omni-flash',
   apiKeySecret: 'AUDIO_API_KEY',
-  mode: 'end',
+  mode: 'both',
   afterSong: 'continue',
-  windowSec: 30,
-  maxCallsPerMinute: 4,
-  screenFallback: false,
+  windowSec: 20,
+  maxCallsPerMinute: 3,
+  screenFallback: true,
   readPlayerMeta: true,
   lookupLyrics: true,
-  instrumentHints: '',
   debug: false,
 };
 
@@ -89,7 +86,7 @@ export const MUSIC_CONFIG_GROUP: ConfigGroup = {
       'worlds.music.screenFallback': {
         type: 'boolean',
         title: '截屏识别播放器',
-        description: '拿不到媒体信息时截一张主屏给 bot 看；会包含屏幕内容。',
+        description: '拿不到媒体信息、或曲目信息来自窗口标题不确定时，截一张主屏给 bot 确认；会包含屏幕内容。',
         'x-hot': true,
       },
       'worlds.music.readPlayerMeta': {
@@ -102,12 +99,6 @@ export const MUSIC_CONFIG_GROUP: ConfigGroup = {
         type: 'boolean',
         title: '查完整歌词',
         description: '有准确曲目信息时从 LRCLIB 查完整歌词；查不到就只听写，保守处理。',
-        'x-hot': true,
-      },
-      'worlds.music.instrumentHints': {
-        type: 'string',
-        title: '额外乐器提示',
-        description: '常见的乐器/风格提示，会拼进分析提示词。',
         'x-hot': true,
       },
       'worlds.music.debug': {

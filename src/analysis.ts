@@ -75,7 +75,7 @@ export async function analyzeWithDashscope(opts: AnalyzeOptions): Promise<Analys
 
   const base = cfg.baseUrl.replace(/\/+$/, '');
   const url = `${base}/chat/completions`;
-  const prompt = buildAnalysisPrompt(cfg, windowSec, opts.context);
+  const prompt = buildAnalysisPrompt(windowSec, opts.context);
   const body = {
     model: cfg.model,
     messages: [{

@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { combineAnalyses, formatAnalysis, parseAnalysis, reactionHint, buildAnalysisPrompt, type MusicAnalysis } from '../src/prompt.ts';
-import { MUSIC_DEFAULTS } from '../src/config.ts';
+import { combineAnalyses, formatAnalysis, parseAnalysis, reactionHint, buildAnalysisPrompt, styleShift, type MusicAnalysis } from '../src/prompt.ts';
 
 const analysis: MusicAnalysis = {
   summary: '慢速的小调钢琴，听起来像克制的惆怅。',
@@ -101,7 +100,7 @@ describe('prompt', () => {
   });
 
   it('includes the immersive schema, taxonomy and Copland cautions', () => {
-    const p = buildAnalysisPrompt(MUSIC_DEFAULTS, 30, { track: '记忆点', artist: '陈卓璇', lyrics: '第一句\n第二句' });
+    const p = buildAnalysisPrompt(30, { track: '记忆点', artist: '陈卓璇', lyrics: '第一句\n第二句' });
     expect(p).toContain('listenerSummary');
     expect(p).toContain('已知完整歌词');
     expect(p).toContain('古筝');
@@ -111,5 +110,20 @@ describe('prompt', () => {
     expect(p).toContain('reference');
     expect(p).toContain('songContext');
     expect(p).toContain('不要猜作品/年代');
+    expect(p).toContain('刚才那句');
+  });
+
+  it('only flags real style or key shifts, not small fluctuations', () => {
+    const rock: MusicAnalysis = {
+      ...analysis,
+      genre: '日系摇滚',
+      tempoBpm: 120,
+      key: 'A',
+      mode: '大调',
+      mood: { valence: 0.1, arousal: 0.8, quality: '热', confidence: 0.8 },
+    };
+    expect(styleShift(rock, { ...rock, genre: '动漫摇滚', tempoBpm: 130, mood: { ...rock.mood!, arousal: 0.75 } })).toBe(false);
+    expect(styleShift(rock, { ...rock, genre: '电子', mood: { ...rock.mood!, arousal: 0.2 } })).toBe(true);
+    expect(styleShift(rock, { ...rock, key: 'C', mode: '小调' })).toBe(true);
   });
 });

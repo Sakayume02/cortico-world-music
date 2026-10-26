@@ -29,12 +29,12 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
     events: [
       {
         type: 'music.started',
-        description: { zh: '第一首或来源未知时确认音乐开始；带曲目或截图，bot 应先报幕。', en: 'The first song or an unknown source is confirmed; carries track or screenshot, and the bot should announce it.' },
+        description: { zh: '第一首或来源未知时确认音乐开始；带曲目，曲目不确定时附截图，bot 应先报幕。', en: 'The first song or an unknown source is confirmed; carries track or a screenshot when unsure, and the bot should announce it.' },
         trigger: 'flush',
       },
       {
         type: 'music.switch',
-        description: { zh: '换歌：上一首完整总结 + 新歌报幕，interrupt 掉上一首没说完的话。', en: 'Song change: the full previous summary plus the new track, interrupting unfinished old talk.' },
+        description: { zh: '换歌：上一首完整总结 + 新歌报幕；新歌信息不确定时附截图，interrupt 掉上一首没说完的话。', en: 'Song change: the previous summary plus the new track, with a screenshot when unsure, interrupting unfinished old talk.' },
         trigger: 'interrupt',
       },
       {
@@ -54,7 +54,7 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
       },
       {
         type: 'music.state',
-        description: { zh: 'World 自己的状态：待命、开始听、停止、错误，以及每两分钟的【在听】心跳。', en: 'The World state: standby, listening, stopped, error, and a two-minute listening heartbeat.' },
+        description: { zh: 'World 自己的状态：待命、开始听、停止、错误、暂停、每 1 分钟【在听】心跳，以及风格突变时的截图确认；不是音乐内容。', en: 'The World state: standby, listening, stopped, error, pause, a one-minute heartbeat, and a screenshot recheck on style shifts; not music content.' },
         trigger: 'flush',
       },
     ],

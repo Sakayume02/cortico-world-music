@@ -3,8 +3,6 @@
  * 判断框架来自 Aaron Copland《如何听懂音乐》：三个层次（感官/表现/纯音乐）+ 四个要素。
  * 但写给 bot 的正文分成「感受」和「内部参考」：术语给 bot 理解，不给孩子照念。
  */
-import type { MusicConfigSection } from './config.ts';
-
 export interface InstrumentGuess {
   name: string;
   confidence: number;
@@ -113,11 +111,9 @@ const SCHEMA = `{
 }`;
 
 export function buildAnalysisPrompt(
-  cfg: MusicConfigSection,
   windowSec: number,
   context?: ListeningContext,
 ): string {
-  const hints = cfg.instrumentHints.trim();
   const known = context?.lyrics?.trim();
   const trackLine = context?.track
     ? `你正在听的曲目（来自播放器媒体信息）：${context.track}${context.artist ? ' — ' + context.artist : ''}${context.album ? '，专辑：' + context.album : ''}。`
@@ -142,13 +138,13 @@ export function buildAnalysisPrompt(
     '- 如果知道歌手风格、创作/发行年代、出处（游戏/动漫/电影/剧集）或在作品里的场景，写进 songContext，先用它理解这首歌想表达什么；**只有确定才写，不确定就留空**，不要猜作品/年代。',
     '- 如果这首歌出自某个作品/场景，感受要贴着那个场景和歌词，不要脱离作品另编故事。',
     '- 听歌时保持专注：不要写成想睡觉/打盹，也不要假装睡着。',
+    '- 你回应时已经有延迟：说“刚才那句/刚才那段”，不要说“现在这句”。',
     '',
     '判断与术语（这些只给 bot 理解，不要照念给用户）：',
     '- 先判断这段音频是不是音乐：歌曲、器乐、纯音乐、说唱伴奏算音乐；播客、有声书、直播里纯说话、ASMR 说话不算。不是音乐就把 isMusic 设为 false（仍返回完整 JSON），musicConfidence 给判断置信度。',
     '- 不要用「某调 = 某情绪」的硬映射；调式只是线索之一，必须结合速度、节奏、音色、力度、旋律一起判断。',
     '- 乐器必须从受控词表里选；不确定是古筝还是 koto、尺八还是箫时，给最可能的 1–2 个并标低置信度，不要默认钢琴。',
     `- 分析窗口约 ${windowSec} 秒，看不到整首的段落就如实说。`,
-    hints ? '- 额外提示：' + hints : '',
     '',
     '歌词规则：',
     known
@@ -298,6 +294,29 @@ export function reactionHint(a: MusicAnalysis): string {
   return '适合安静听、轻轻晃；用现有动作，别打盹/睡觉。';
 }
 
+const GENRE_TAGS = ['摇滚', '流行', '民谣', '电子', '古典', '爵士', '说唱', '嘻哈', '金属', '朋克', '乡村', '国风', '古风', '游戏', '动漫', '原声', '纯音乐', 'R&B', '放克', '灵魂', '蓝调', '雷鬼', '拉丁', '实验', 'lo-fi'];
+
+function broadGenres(genre?: string): string[] {
+  if (!genre) return [];
+  const s = genre.toLowerCase();
+  return GENRE_TAGS.filter((tag) => s.includes(tag.toLowerCase()));
+}
+
+/** 相邻窗口是不是风格/音调突然变了；只用来触发“再确认播放器”，不直接报切歌。 */
+export function styleShift(prev: MusicAnalysis, next: MusicAnalysis): boolean {
+  const a = broadGenres(prev.genre);
+  const b = broadGenres(next.genre);
+  if (a.length && b.length && !a.some((tag) => b.includes(tag))) return true;
+  if (prev.tempoBpm && next.tempoBpm && Math.abs(prev.tempoBpm - next.tempoBpm) >= 25) return true;
+  if (prev.key && next.key && prev.key.toLowerCase() !== next.key.toLowerCase()) return true;
+  if (prev.mode && next.mode && prev.mode.toLowerCase() !== next.mode.toLowerCase()) return true;
+  if (prev.mood && next.mood) {
+    if (Math.abs(prev.mood.arousal - next.mood.arousal) >= 0.45) return true;
+    if (Math.abs(prev.mood.valence - next.mood.valence) >= 0.5) return true;
+  }
+  return false;
+}
+
 function songContextLines(s?: MusicAnalysis['songContext']): string {
   if (!s) return '';
   const parts: string[] = [];
@@ -333,6 +352,7 @@ export function formatAnalysis(a: MusicAnalysis, context?: ListeningContext): st
     lines.push('—— 内部参考（给 bot 理解音乐用，不要照念给用户）——');
     lines.push(tech.join('\n'));
   }
+  lines.push('回应时用“刚才那句/刚才那段”；不要说“现在这句”，因为你回应时已经有延迟。');
   return lines.join('\n');
 }
 
@@ -400,5 +420,6 @@ export function combineAnalyses(
   }
   lines.push('');
   lines.push('用你平时那种傻白甜的语气说，像一个人，可以带一个现有动作；不要像分析报告，也不要念内部参考。');
+  lines.push('总结时说“刚才那句/刚才那段”，不要说“现在这句”，因为你回答时已经有延迟。');
   return lines.join('\n');
 }
