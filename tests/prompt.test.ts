@@ -113,6 +113,19 @@ describe('prompt', () => {
     expect(p).toContain('刚才那句');
   });
 
+  it('marks browser tab titles as hints and unknown sources as unknown', () => {
+    const browser = buildAnalysisPrompt(20, { sourceKind: 'browser', sourceApp: 'Chrome', tabTitle: '某视频 - YouTube' });
+    expect(browser).toContain('声音来源：浏览器');
+    expect(browser).toContain('标签页标题');
+    expect(browser).toContain('不是已确认歌名');
+    expect(browser).toContain('不要硬报');
+    expect(formatAnalysis(analysis, { sourceKind: 'browser', sourceApp: 'Chrome', tabTitle: '某视频' })).toContain('浏览器');
+
+    const unknown = buildAnalysisPrompt(20, { sourceKind: 'unknown' });
+    expect(unknown).toContain('没认出来');
+    expect(unknown).toContain('不要猜');
+  });
+
   it('only flags real style or key shifts, not small fluctuations', () => {
     const rock: MusicAnalysis = {
       ...analysis,

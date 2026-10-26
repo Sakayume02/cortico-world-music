@@ -37,6 +37,14 @@ const meta: PlayerMeta = {
   status: 'Playing',
 };
 
+const browserMeta: PlayerMeta = {
+  kind: 'browser',
+  app: 'chrome.exe',
+  appName: 'Chrome',
+  title: '某视频 - YouTube',
+  status: 'Playing',
+};
+
 const lyrics: LyricsResult = {
   text: '所以你才选择离开\n别不说话我的亲爱',
   source: 'lrclib',
@@ -213,6 +221,26 @@ describe('Music World', () => {
     await sleep(160);
     expect(host.events.some((e) => e.type === 'music.started')).toBe(true);
     expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('音乐停下来了'))).toBe(true);
+    await world.stop();
+  });
+
+  it('treats browser media as a tab-title hint, not a confirmed song', async () => {
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, screenFallback: false, lookupLyrics: false, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+      metadataReader: async () => browserMeta,
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+    capture.feed(tone(1.2));
+    await sleep(40);
+    capture.feed(silence(3));
+    await sleep(160);
+    const started = host.events.find((e) => e.type === 'music.started')!;
+    expect(started.text).toContain('浏览器');
+    expect(started.text).toContain('不是已确认歌名');
+    expect(started.text).toContain('某视频');
+    expect(host.events.some((e) => e.type === 'music.ended')).toBe(true);
     await world.stop();
   });
 

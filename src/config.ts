@@ -91,8 +91,8 @@ export const MUSIC_CONFIG_GROUP: ConfigGroup = {
       },
       'worlds.music.readPlayerMeta': {
         type: 'boolean',
-        title: '读播放器曲目信息',
-        description: '从 Windows 媒体会话读桌面播放器的歌名/歌手；浏览器不读，按音频识别。',
+        title: '读播放器/浏览器信息',
+        description: '从 Windows 媒体会话读播放器曲目或浏览器标签页标题；浏览器标题只作参考。浏览器媒体会话不可用时按音频识别。',
         'x-hot': true,
       },
       'worlds.music.lookupLyrics': {

@@ -9,7 +9,7 @@ const GSMTS_SCRIPT = fileURLToPath(new URL('./scripts/gsmts.ps1', import.meta.ur
 export type MediaKind = 'player' | 'browser' | 'other';
 
 export interface PlayerMeta {
-  kind: 'player';
+  kind: 'player' | 'browser';
   /** 原始应用标识（AUMID 或 exe 名）。 */
   app: string;
   appName: string;
@@ -31,6 +31,17 @@ const PLAYERS: Array<{ match: RegExp; name: string }> = [
   { match: /itunes/i, name: 'iTunes' },
 ];
 
+const BROWSERS: Array<{ match: RegExp; name: string }> = [
+  { match: /chrome/i, name: 'Chrome' },
+  { match: /msedge|edge/i, name: 'Edge' },
+  { match: /firefox/i, name: 'Firefox' },
+  { match: /brave/i, name: 'Brave' },
+  { match: /vivaldi/i, name: 'Vivaldi' },
+  { match: /opera/i, name: 'Opera' },
+  { match: /360se/i, name: '360 浏览器' },
+  { match: /qqbrowser/i, name: 'QQ 浏览器' },
+];
+
 export function classifyMediaApp(app: string): MediaKind {
   const s = String(app ?? '').toLowerCase();
   if (/(chrome|msedge|firefox|brave|opera|vivaldi|360se|qqbrowser)/.test(s)) return 'browser';
@@ -42,12 +53,21 @@ export function playerName(app: string): string {
   return PLAYERS.find((p) => p.match.test(String(app ?? '')))?.name ?? String(app ?? '');
 }
 
-const WINDOW_TITLE_SUFFIX = /\s*[-–—|•]\s*(网易云音乐|QQ\s*音乐|QQMusic|Spotify|Windows Media Player|Microsoft Media Player|Media Player|酷狗音乐|酷我音乐|foobar2000|iTunes)\s*$/i;
-const APP_ONLY = /^(网易云音乐|QQ\s*音乐|QQMusic|Spotify|Windows Media Player|Microsoft Media Player|Media Player|酷狗音乐|酷我音乐|foobar2000|iTunes|桌面歌词)$/i;
+export function browserName(app: string): string {
+  return BROWSERS.find((b) => b.match.test(String(app ?? '')))?.name ?? String(app ?? '');
+}
 
-/** 播放器窗口标题兜底：GSMTC 没有会话时，从已知播放器窗口的标题里拆歌名/歌手。 */
+export function mediaAppName(app: string): string {
+  return classifyMediaApp(app) === 'browser' ? browserName(app) : playerName(app);
+}
+
+const WINDOW_TITLE_SUFFIX = /\s*[-–—|•]\s*(网易云音乐|QQ\s*音乐|QQMusic|Spotify|Windows Media Player|Microsoft Media Player|Media Player|酷狗音乐|酷我音乐|foobar2000|iTunes|Google Chrome|Microsoft Edge|Mozilla Firefox|Brave|Vivaldi|Opera|360 安全浏览器|QQ 浏览器)\s*$/i;
+const APP_ONLY = /^(网易云音乐|QQ\s*音乐|QQMusic|Spotify|Windows Media Player|Microsoft Media Player|Media Player|酷狗音乐|酷我音乐|foobar2000|iTunes|桌面歌词|Google Chrome|Microsoft Edge|Mozilla Firefox|Brave|Vivaldi|Opera|360 安全浏览器|QQ 浏览器)$/i;
+
+/** 播放器/浏览器窗口标题兜底：GSMTC 没有会话时，从已知窗口的标题里拆歌名/歌手。 */
 export function parsePlayerWindowTitle(app: string, windowTitle: string): PlayerMeta | null {
-  if (classifyMediaApp(app) !== 'player') return null;
+  const kind = classifyMediaApp(app);
+  if (kind === 'other') return null;
   let clean = String(windowTitle ?? '').trim();
   if (!clean) return null;
   clean = clean.replace(WINDOW_TITLE_SUFFIX, '').trim();
@@ -57,10 +77,10 @@ export function parsePlayerWindowTitle(app: string, windowTitle: string): Player
   const title = parts[0]!;
   const artist = parts[1];
   if (!title || APP_ONLY.test(title)) return null;
-  return { kind: 'player', app, appName: playerName(app), title, artist, status: 'window-title' };
+  return { kind, app, appName: mediaAppName(app), title, artist, status: 'window-title' };
 }
 
-/** 已知播放器窗口的标题；GSMTC 不可用时的兜底。 */
+/** 已知播放器/浏览器窗口的标题；GSMTC 不可用时的兜底。 */
 export async function readWindowTitleMetadata(): Promise<PlayerMeta | null> {
   if (process.platform !== 'win32') return null;
   const script = [
@@ -95,8 +115,8 @@ export async function readWindowTitleMetadata(): Promise<PlayerMeta | null> {
 }
 
 /**
- * 读当前系统媒体会话。只认已知的桌面播放器；浏览器按「自己识别」处理，返回 null。
- * 没有会话、解析失败、应用不是播放器时都返回 null，交给音频识别兜底。
+ * 读当前系统媒体会话：桌面播放器或浏览器。
+ * 浏览器只把媒体会话标题当标签页参考，不当作已确认歌名；不查歌词。
  */
 export async function readPlayerMetadata(): Promise<PlayerMeta | null> {
   if (process.platform !== 'win32') return null;
@@ -120,8 +140,9 @@ export async function readPlayerMetadata(): Promise<PlayerMeta | null> {
   const status = typeof data.status === 'string' ? data.status : '';
   if (!title || !app) return readWindowTitleMetadata();
   if (status === 'Stopped' || status === 'Closed') return readWindowTitleMetadata();
-  if (classifyMediaApp(app) !== 'player') return readWindowTitleMetadata();
+  const kind = classifyMediaApp(app);
+  if (kind === 'other') return readWindowTitleMetadata();
   const artist = typeof data.artist === 'string' && data.artist.trim() ? data.artist.trim() : undefined;
   const album = typeof data.album === 'string' && data.album.trim() ? data.album.trim() : undefined;
-  return { kind: 'player', app, appName: playerName(app), title, artist, album, status };
+  return { kind, app, appName: mediaAppName(app), title, artist, album, status };
 }

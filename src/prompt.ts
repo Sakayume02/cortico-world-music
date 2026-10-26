@@ -66,6 +66,20 @@ export interface ListeningContext {
   album?: string;
   lyrics?: string;
   lyricsSource?: LyricsSource;
+  /** 声音来源：桌面播放器 / 浏览器 / 没认出来。 */
+  sourceKind?: 'player' | 'browser' | 'unknown';
+  sourceApp?: string;
+  /** 浏览器标签页标题，只是参考，不是已确认歌名。 */
+  tabTitle?: string;
+}
+
+function sourceLine(context?: ListeningContext): string {
+  if (!context?.sourceKind) return '';
+  if (context.sourceKind === 'browser') {
+    return `声音来源：浏览器（${context.sourceApp ?? '未知浏览器'}）；标签页标题：${context.tabTitle ?? '没拿到'}（只是标签页参考，不是已确认歌名；以音频和屏幕为准）。`;
+  }
+  if (context.sourceKind === 'unknown') return '声音来源：没认出来是哪个程序；不要猜歌名/来源，只写听感。';
+  return `声音来源：播放器（${context.sourceApp ?? '未知播放器'}）。`;
 }
 
 /** 受控乐器词表；提示词里给全，要求不确定就标低置信度。 */
@@ -115,6 +129,7 @@ export function buildAnalysisPrompt(
   context?: ListeningContext,
 ): string {
   const known = context?.lyrics?.trim();
+  const source = sourceLine(context);
   const trackLine = context?.track
     ? `你正在听的曲目（来自播放器媒体信息）：${context.track}${context.artist ? ' — ' + context.artist : ''}${context.album ? '，专辑：' + context.album : ''}。`
     : '';
@@ -139,6 +154,8 @@ export function buildAnalysisPrompt(
     '- 如果这首歌出自某个作品/场景，感受要贴着那个场景和歌词，不要脱离作品另编故事。',
     '- 听歌时保持专注：不要写成想睡觉/打盹，也不要假装睡着。',
     '- 你回应时已经有延迟：说“刚才那句/刚才那段”，不要说“现在这句”。',
+    '- 声音来源是浏览器时，标签页标题只是参考，不是已确认歌名；不确定就只说听感/画面，不要硬报。',
+    '- 声音来源未知、或截图也认不出时，直接说“我没认出来是哪个程序/什么歌”，不要猜；正常听。',
     '',
     '判断与术语（这些只给 bot 理解，不要照念给用户）：',
     '- 先判断这段音频是不是音乐：歌曲、器乐、纯音乐、说唱伴奏算音乐；播客、有声书、直播里纯说话、ASMR 说话不算。不是音乐就把 isMusic 设为 false（仍返回完整 JSON），musicConfidence 给判断置信度。',
@@ -152,6 +169,7 @@ export function buildAnalysisPrompt(
       : '- 没有可信歌词：只写确实听清的短句（最多两句），听不清就 present=false、text 空；不要编造。',
     '- 歌词可能听错；在感受里引用时只用短句，并留余地。',
     '',
+    source,
     trackLine,
     known ? '已知完整歌词（可信，用来理解内容；不要整段复述）：\n' + known : '',
     '',
@@ -331,6 +349,8 @@ function songContextLines(s?: MusicAnalysis['songContext']): string {
 /** 一个窗口的正文：先感受，后内部参考。 */
 export function formatAnalysis(a: MusicAnalysis, context?: ListeningContext): string {
   const lines: string[] = [];
+  const source = sourceLine(context);
+  if (source) lines.push(source);
   if (context?.track) lines.push(`曲目：${context.track}${context.artist ? ' — ' + context.artist : ''}${context.album ? '（专辑：' + context.album + '）' : ''}`);
   const background = songContextLines(a.songContext);
   if (background) lines.push('歌曲背景（如果知道）：' + background);
@@ -382,6 +402,8 @@ export function combineAnalyses(
   for (const a of analyses) for (const i of a.instruments) instruments.set(i.name, Math.max(instruments.get(i.name) ?? 0, i.confidence));
 
   const lines: string[] = [`【一起听完这一段】约 ${Math.round(durationMs / 1000)} 秒，共 ${analyses.length} 个窗口（每窗约 ${windowSec} 秒）。`];
+  const source = sourceLine(context);
+  if (source) lines.push(source);
   if (context?.track) lines.push(`曲目：${context.track}${context.artist ? ' — ' + context.artist : ''}（来自播放器媒体信息）`);
   if (backgrounds.length) {
     const background = songContextLines(backgrounds[backgrounds.length - 1]);

@@ -110,7 +110,7 @@ interface LastEnded {
   segment?: ActiveSegment;
 }
 
-const EMPTY_INFO: ListeningInfo = { context: {} };
+const EMPTY_INFO: ListeningInfo = { context: { sourceKind: 'unknown' } };
 
 interface SettingsState {
   backend: string;
@@ -244,18 +244,24 @@ export class MusicWorld implements World {
 
   private async loadTrack(): Promise<ListeningInfo> {
     const meta = await this.loadMeta();
-    if (!meta) return EMPTY_INFO;
+    if (!meta) return { context: { sourceKind: 'unknown' } };
     this.polledTrackKey = `${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
+    if (meta.kind === 'browser') {
+      return {
+        context: { sourceKind: 'browser', sourceApp: meta.appName, tabTitle: meta.title },
+        meta,
+      };
+    }
     return {
-      context: { track: meta.title, artist: meta.artist, album: meta.album },
+      context: { sourceKind: 'player', sourceApp: meta.appName, track: meta.title, artist: meta.artist, album: meta.album },
       meta,
     };
   }
 
-  /** 歌词/背景在后台补，不挡报幕和换歌。 */
+  /** 歌词/背景在后台补，不挡报幕和换歌；浏览器不查歌词。 */
   private async loadFullInfo(trackInfo: ListeningInfo): Promise<ListeningInfo> {
     const meta = trackInfo.meta;
-    if (!meta || !this.opts.cfg.lookupLyrics) return trackInfo;
+    if (!meta || meta.kind !== 'player' || !this.opts.cfg.lookupLyrics) return trackInfo;
     let lyrics: LyricsResult | null = null;
     try {
       lyrics = this.opts.lyricsResolver ? await this.opts.lyricsResolver(meta) : await lookupLyrics(meta);
@@ -438,16 +444,23 @@ export class MusicWorld implements World {
     }
   }
 
-  /** 曲目已知时，一开始就报幕（不等第一个窗口）。信息来自窗口标题时附截图确认。 */
+  /** 曲目已知时，一开始就报幕（不等第一个窗口）；浏览器/来源未知用标签页或截图确认。 */
   private async pushStarted(segment: ActiveSegment, info: ListeningInfo): Promise<void> {
     const track = info.context.track;
     const artist = info.context.artist;
+    const tabTitle = info.context.tabTitle;
+    const sourceApp = info.context.sourceApp;
+    const browser = info.context.sourceKind === 'browser';
     const trackLine = track
       ? `开始一起听：${track}${artist ? ' — ' + artist : ''}（来自播放器媒体信息）。`
-      : '开始听到一段音乐（系统声音），歌名还没认出来。';
+      : browser
+        ? `浏览器在放：${tabTitle ?? '标签页标题没拿到'}${sourceApp ? `（${sourceApp}）` : ''}；这只是标签页参考，不是已确认歌名。`
+        : '没认出来是哪个程序/歌名；先正常听，不要猜。';
     const announce = track
       ? `先用一句话报个幕：“是${artist ? artist + ' 的 ' : ''}《${track}》呀，我来听一下。” 然后跟着听。`
-      : '先用一句话报个幕：“新的一首，我来听一下；歌名还没认出来。” 不要硬报歌名。';
+      : browser
+        ? '先用一句话说“浏览器里在放，我先听着；歌名还没确认，不硬报。” 然后跟着听。'
+        : '先用一句话说“我没认出来是什么，先听着；不乱猜。” 然后跟着听。';
     const lines = [trackLine, announce, '跟着听；想动就动，用现有动作；不想动就安静听。听歌时别打盹/睡觉，专注一点。结束/暂停时再说感受。'];
 
     const uncertain = !track || info.meta?.status === 'window-title';
@@ -458,11 +471,19 @@ export class MusicWorld implements World {
       screenshot = shot.blob;
       note = shot.note ?? '';
     }
-    if (screenshot) lines.push('附一张当前屏幕，供你确认播放器/歌名；如果播放器信息和屏幕不一致，以屏幕为准；识别不出就只说听感。');
+    if (screenshot) {
+      lines.push(browser
+        ? '附一张当前屏幕，供你确认浏览器标签页/歌名；标签页标题只是参考，以屏幕和音频为准；还是认不出就说不知道，别猜。'
+        : '附一张当前屏幕，供你确认播放器/歌名；如果播放器信息和屏幕不一致，以屏幕为准；识别不出就只说听感。');
+    }
     if (note) lines.push(note);
     if (info.lyrics) lines.push('已经拿到完整可信歌词（LRCLIB），歌词不用你听写；引用只引短句。');
 
-    this.lastTrack = [track, artist].filter(Boolean).join(' — ');
+    this.lastTrack = track
+      ? [track, artist].filter(Boolean).join(' — ')
+      : browser
+        ? [tabTitle ?? '浏览器', sourceApp].filter(Boolean).join(' — ')
+        : '来源未知';
     segment.startedPushed = true;
     await this.pushEvent('music.started', lines.join('\n'), {
       origin: 'external',
@@ -474,6 +495,9 @@ export class MusicWorld implements World {
         track,
         artist,
         album: info.context.album,
+        sourceKind: info.context.sourceKind,
+        sourceApp,
+        tabTitle,
         trackSource: info.meta?.status,
         lyricsSource: info.lyrics ? 'lrclib' : undefined,
       },
@@ -487,12 +511,19 @@ export class MusicWorld implements World {
     if (prev.segment) prev.segment.superseded = true;
     const track = info.context.track;
     const artist = info.context.artist;
+    const tabTitle = info.context.tabTitle;
+    const sourceApp = info.context.sourceApp;
+    const browser = info.context.sourceKind === 'browser';
     const newLine = track
       ? `现在开始：${track}${artist ? ' — ' + artist : ''}（来自播放器媒体信息）。`
-      : '现在开始：新的一首（来源未知，歌名还没认出来）。';
+      : browser
+        ? `现在开始：浏览器里的一首（${tabTitle ?? '标题没拿到'}；只是标签页参考，不是已确认歌名）。`
+        : '现在开始：新的一首（没认出来是哪个程序/歌名）。';
     const announce = track
       ? `“是${artist ? artist + ' 的 ' : ''}《${track}》呀，我来听一下。”`
-      : '“新的一首，我来听一下；歌名还没认出来。”';
+      : browser
+        ? '“浏览器里在放，我先听着；歌名还没确认，不硬报。”'
+        : '“我没认出来是什么，先听着；不乱猜。”';
     const lines = [
       '【换歌】',
       prev.track ? `上一首：${prev.track}` : '上一首：未知',
@@ -508,10 +539,16 @@ export class MusicWorld implements World {
     if (uncertain) {
       const shot = await this.captureScreen();
       screenshot = shot.blob;
-      if (screenshot) lines.push('附一张当前屏幕，供你确认新歌；如果播放器信息和屏幕不一致，以屏幕为准。');
+      if (screenshot) lines.push(browser
+        ? '附一张当前屏幕，供你确认浏览器标签页/新歌；标签页标题只是参考，以屏幕和音频为准；还是认不出就说不知道。'
+        : '附一张当前屏幕，供你确认新歌；如果播放器信息和屏幕不一致，以屏幕为准。');
       else if (shot.note) lines.push(shot.note);
     }
-    this.lastTrack = [track, artist].filter(Boolean).join(' — ');
+    this.lastTrack = track
+      ? [track, artist].filter(Boolean).join(' — ')
+      : browser
+        ? [tabTitle ?? '浏览器', sourceApp].filter(Boolean).join(' — ')
+        : '来源未知';
     segment.startedPushed = true;
     await this.pushEvent('music.switch', lines.join('\n'), {
       origin: 'external',
@@ -521,6 +558,9 @@ export class MusicWorld implements World {
         track,
         artist,
         album: info.context.album,
+        sourceKind: info.context.sourceKind,
+        sourceApp,
+        tabTitle,
         trackSource: info.meta?.status,
         model: this.opts.cfg.model,
       },

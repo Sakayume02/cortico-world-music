@@ -29,12 +29,12 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
     events: [
       {
         type: 'music.started',
-        description: { zh: '第一首或来源未知时确认音乐开始；带曲目，曲目不确定时附截图，bot 应先报幕。', en: 'The first song or an unknown source is confirmed; carries track or a screenshot when unsure, and the bot should announce it.' },
+        description: { zh: '第一首或来源未知时确认音乐开始；带曲目/浏览器标签页/截图，来源不确定时附截图，bot 应先报幕。', en: 'The first song or an unknown source is confirmed; carries track, browser tab title or a screenshot when unsure, and the bot should announce it.' },
         trigger: 'flush',
       },
       {
         type: 'music.switch',
-        description: { zh: '换歌：上一首完整总结 + 新歌报幕；新歌信息不确定时附截图，interrupt 掉上一首没说完的话。', en: 'Song change: the previous summary plus the new track, with a screenshot when unsure, interrupting unfinished old talk.' },
+        description: { zh: '换歌：上一首完整总结 + 新歌报幕；新歌来源是浏览器/不确定/没认出来时附截图或标签页参考，interrupt 掉上一首没说完的话。', en: 'Song change: the previous summary plus the new track; browser tab titles are hints, with a screenshot when unsure, interrupting unfinished old talk.' },
         trigger: 'interrupt',
       },
       {
