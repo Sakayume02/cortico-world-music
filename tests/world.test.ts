@@ -343,11 +343,45 @@ describe('Music World', () => {
     await world.stop();
   });
 
+  it('does not treat a GSMTC source without PCM as real sound', async () => {
+    vi.useFakeTimers();
+    try {
+      const monitor = new FakeSourceMonitor();
+      const { world, capture } = makeWorld({ sourceMonitor: monitor });
+      const host = new FakeHost();
+      await world.start(host);
+      await startListening(world);
+      monitor.push({ at: Date.now(), source: { app: 'chrome.exe', appName: 'Chrome', title: 'paused tab', status: 'Playing' }, sessions: [] });
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(capture.cb).toBeNull();
+      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('30 秒'))).toBe(true);
+      await world.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('passes a requested processId to the capture factory', async () => {
+    let capturedPid: number | undefined;
+    const { world } = makeWorld({
+      captureFactory: (processId) => {
+        capturedPid = processId;
+        return new FakeCapture();
+      },
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    const tool = world.tools().find((t) => t.name === 'music_watch')!;
+    await tool.handler({ action: 'start', processId: 4840 }, {} as ToolCallContext);
+    expect(capturedPid).toBe(4840);
+    await world.stop();
+  });
+
   it('waits, announces source, and reacts to pause/switch', async () => {
     vi.useFakeTimers();
     try {
       const monitor = new FakeSourceMonitor();
-      const { world } = makeWorld({ sourceMonitor: monitor });
+      const { world, capture } = makeWorld({ sourceMonitor: monitor });
       const host = new FakeHost();
       await world.start(host);
       await startListening(world);
@@ -355,7 +389,8 @@ describe('Music World', () => {
       expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('等你'))).toBe(true);
 
       monitor.push({ at: Date.now(), source: { app: 'chrome.exe', appName: 'Chrome', title: 'A', status: 'Playing' }, sessions: [] });
-      await vi.advanceTimersByTimeAsync(10);
+      capture.feed(tone(1.2));
+      await vi.advanceTimersByTimeAsync(20);
       expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('检测到'))).toBe(true);
 
       monitor.push({ at: Date.now(), source: { app: 'chrome.exe', appName: 'Chrome', title: 'B', status: 'Playing' }, sessions: [] });

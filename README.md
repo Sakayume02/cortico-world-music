@@ -135,6 +135,7 @@
 
 ## 声音来源
 
+- **按进程采集**：`music_watch start` 可带 `processId`，用现有 `loopback-capture` 的 WASAPI process loopback 只录该进程树；开始/换应用时先用 `listen_read` 的 `source_list` 拿 PID，Coo 自己的声音不会进 PCM。
 - **实时音源监控**：常驻 GSMTC 监控所有媒体会话，300ms 一次；优先正在 Playing 的播放器/浏览器。
 - **只看实际电平**：先用 Windows 音频会话（WASAPI 每进程峰值）判断有没有**非 Coo 应用**在发声；播放器暂停/开着没声不算音乐。
 - **纯音乐/无人声也听**：只要真实声音在响就开始，不因为第一窗没有歌词/人声就丢段。

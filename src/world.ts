@@ -35,6 +35,7 @@ export const MUSIC_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       additionalProperties: false,
       properties: {
         action: { type: 'string', enum: ['start', 'stop', 'status'], description: 'start = user explicitly asked to listen (again = new round, drop the old); stop = stop and summarize; status = read state.' },
+        processId: { type: 'number', description: 'Optional; only capture this process tree (use the PID from listen_read source_list for browser/player audio). Omit for system audio.' },
         mode: { type: 'string', enum: ['end', 'live', 'both'], description: 'Optional; switch the default delivery mode while starting.' },
       },
       required: ['action'],
@@ -74,7 +75,7 @@ export interface MusicWorldOptions {
   secret(name: string): string;
   storeSecret(name: string, value: string): void;
   persist(patch: Partial<MusicConfigSection>): void;
-  captureFactory?: () => CaptureLike;
+  captureFactory?: (processId?: number) => CaptureLike;
   analyze?: (wav: Uint8Array, cfg: MusicConfigSection, key: string, windowSec: number, context?: ListeningContext) => Promise<AnalysisOutcome>;
   metadataReader?: () => Promise<PlayerMeta | null>;
   sourceMonitor?: SourceMonitorLike;
@@ -152,7 +153,9 @@ export class MusicWorld implements World {
   private waiting = false;
   private pauseNotified = false;
   private sourceKey = '';
+  private candidateSource?: { app: string; appName: string; title?: string; artist?: string; status: string };
   private lastAudibleAt = 0;
+  private processId?: number;
   private selfAudible = false;
   private pollInFlight = false;
   private polledTrackKey = '';
@@ -297,7 +300,7 @@ export class MusicWorld implements World {
 
   private startCapture(): void {
     if (this.running) return;
-    const capture = this.opts.captureFactory?.() ?? new SystemAudioCapture();
+    const capture = this.opts.captureFactory?.(this.processId) ?? new SystemAudioCapture(this.processId);
     const segmenter = new MusicSegmenter({
       windowSec: this.opts.cfg.windowSec,
       minWindowSec: Math.min(4, Math.max(1, this.opts.cfg.windowSec)),
@@ -493,23 +496,19 @@ export class MusicWorld implements World {
     if (!this.running) return;
     const source = snapshot.source;
     if (source) {
-      this.lastAudibleAt = Date.now();
-      const wasWaiting = this.waiting;
-      this.stopWaiting();
       const key = `${source.app}|${source.title ?? ''}|${source.artist ?? ''}`;
       const changed = !!this.sourceKey && this.sourceKey !== key;
       this.sourceKey = key;
+      this.candidateSource = source;
       this.pauseNotified = false;
-      if (wasWaiting) {
-        void this.pushState(`检测到${source.appName}在出声；我开始听。`, 'info', { source: true, app: source.appName, title: source.title });
-      }
       if (changed) {
-        this.logger('debug', '实时音源切歌', { from: this.sourceKey, to: key, app: source.app });
+        this.logger('debug', '实时音源切歌', { to: key, app: source.app });
         void this.pushState(`像切歌了；我重新听这一段（${source.title ?? source.appName}）。`, 'info', { switched: true, app: source.appName, title: source.title });
         this.segmenter?.flush();
       }
       return;
     }
+    this.candidateSource = undefined;
     if (this.sourceKey && !this.pauseNotified) {
       this.pauseNotified = true;
       void this.pushState('播放器/浏览器暂停了；我先等你。', 'info', { paused: true });
@@ -561,6 +560,11 @@ export class MusicWorld implements World {
     if (this.segment !== segment || segment.dropped || segment.generation !== this.listenGeneration || !this.running) return;
     if (!this.selfAudible) this.lastAudibleAt = Date.now();
 
+    // 只有真正有 PCM 帧（走到了这里）才宣布“检测到”；GSMTC 说 Playing 但实际暂停/静音时不会报。
+    if (this.waiting && this.candidateSource) {
+      this.stopWaiting();
+      void this.pushState(`检测到${this.candidateSource.appName}在出声；我开始听。`, 'info', { source: true, app: this.candidateSource.appName, title: this.candidateSource.title });
+    }
     const hasMediaHint = !!trackInfo.meta && (
       trackInfo.meta.source === 'audio-session'
       || trackInfo.meta.status === 'window-title'
@@ -1026,7 +1030,9 @@ export class MusicWorld implements World {
       handler: async (args: Record<string, unknown>) => {
         const action = String(args.action ?? '');
         const mode = args.mode === 'end' || args.mode === 'live' || args.mode === 'both' ? args.mode : undefined;
+        const rawPid = Number(args.processId);
         if (action === 'start') {
+          this.processId = Number.isInteger(rawPid) && rawPid > 0 ? rawPid : undefined;
           if (mode) { this.opts.cfg.mode = mode; this.opts.persist({ mode }); }
           const wasRunning = this.running;
           await this.resetListening();
@@ -1047,6 +1053,7 @@ export class MusicWorld implements World {
           if (hadSegment) this.segmenter?.flush();
           this.stopCapture();
           this.segment = undefined;
+          this.processId = undefined;
           await this.pushState('已停止听。');
           return hadSegment ? '已停止；刚才那段会在分析完成后作为 music.ended 送来。' : '已停止。';
         }
@@ -1082,6 +1089,12 @@ export class MusicWorld implements World {
           } catch {
             lines.push('当前输入：读取失败，先按已有信息听。');
           }
+          if (this.candidateSource) {
+            const candidate = this.candidateSource;
+            lines.push(`媒体会话候选：${candidate.appName}（${candidate.status}）${candidate.title ? ' — ' + candidate.title : ''}；是否真的出声以实际 PCM/分析为准。`);
+          }
+          if (this.segment) lines.push('实际音频：当前有 PCM 段落，正在分析。');
+          else if (!this.lastAnalysis) lines.push('实际音频：还没有任何 PCM 音频通过分析。');
         }
         if (this.lastAnalysis) lines.push('最近一次分析：\n' + formatAnalysis(this.lastAnalysis));
         else lines.push('还没拿到过分析。');

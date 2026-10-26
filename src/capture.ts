@@ -10,6 +10,8 @@ export interface CaptureLike {
 
 export interface LoopbackAddon {
   LoopbackCapture: new () => {
+    /** 只录某个进程树（Windows 上是 WASAPI process loopback）。 */
+    start: (processId: number, includeProcessTree: boolean, callback: (chunk: Buffer) => void) => void;
     startSystemAudio: (callback: (chunk: Buffer) => void) => void;
     stop: () => void;
   };
@@ -25,18 +27,22 @@ export function loadLoopback(): LoopbackAddon {
   }
 }
 
-/** 采集默认系统输出；回调和 listen 一样是 48k 立体声 16-bit PCM。 */
+/** 采集默认系统输出，或只采集某个进程树；回调和 listen 一样是 48k 立体声 16-bit PCM。 */
 export class SystemAudioCapture implements CaptureLike {
   private impl: InstanceType<LoopbackAddon['LoopbackCapture']> | null = null;
+
+  constructor(private readonly processId?: number) {}
 
   start(onPcm: (pcm: Int16Array) => void): void {
     if (this.impl) throw new Error('已经在采集了：先 stop。');
     const mod = loadLoopback();
     const impl = new mod.LoopbackCapture();
-    impl.startSystemAudio((chunk: Buffer) => {
+    const cb = (chunk: Buffer) => {
       const pcm = new Int16Array(chunk.buffer, chunk.byteOffset, Math.floor(chunk.byteLength / 2));
       if (pcm.length) onPcm(pcm);
-    });
+    };
+    if (this.processId && this.processId > 0) impl.start(this.processId, true, cb);
+    else impl.startSystemAudio(cb);
     this.impl = impl;
   }
 
