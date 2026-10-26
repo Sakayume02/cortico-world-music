@@ -312,6 +312,24 @@ describe('Music World', () => {
     expect(keyState.hasKey).toBe(true);
   });
 
+  it('starts a fresh round when the user asks again and drops old pending events', async () => {
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, windowSec: 1, mode: 'both', screenFallback: false, readPlayerMeta: false, lookupLyrics: false, maxCallsPerMinute: 10 },
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    const first = await startListening(world);
+    expect(first).toContain('正在一起听');
+    capture.feed(tone(1.2));
+    await sleep(60);
+    expect(host.events.some((e) => e.type === 'music.scene')).toBe(true);
+    const again = await startListening(world);
+    expect(again).toContain('重新开始');
+    expect(host.withdrawn.length).toBeGreaterThan(0);
+    expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('重新开始'))).toBe(true);
+    await world.stop();
+  });
+
   it('switches songs with the previous complete summary and announces the new track', async () => {
     let metaCall = 0;
     const first: PlayerMeta = { ...meta, title: '第一首' };

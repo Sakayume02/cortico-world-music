@@ -22,7 +22,7 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
   }),
   describe: {
     tools: describeTools(MUSIC_TOOL_DECLS, {
-      music_watch: { zh: '只有在用户明确要求一起听音乐时才开始；停止会总结当前一段。', en: 'Start only when the user explicitly asks to listen together; stop summarizes the current segment.' },
+      music_watch: { zh: '只有在用户明确要求一起听音乐时才开始；听歌中再次 start = 丢掉上一轮、开始新一轮；停止才会总结当前一段。', en: 'Start only when the user explicitly asks to listen together; calling start again drops the old round and begins a new one; stop summarizes the current segment.' },
       music_now: { zh: '查看是否在听、当前一段、当前曲目与最近一次感受。', en: 'Read listening state, the current segment, track and latest feeling.' },
       music_mode: { zh: '切换 end / live / both 投递模式。', en: 'Set end / live / both delivery mode.' },
     }),

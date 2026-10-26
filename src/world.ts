@@ -24,13 +24,13 @@ const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url
 export const MUSIC_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
   {
     name: 'music_watch',
-    description: 'Start listening only when the user explicitly asks to listen to music together, stop and summarize the current piece, or read the current state. This World stays on standby and never starts by itself.',
+    description: 'Start listening only when the user explicitly asks to listen to music together. Calling start again while already listening drops the old round (including pending summaries) and starts a new round. stop summarizes the current piece; status reads the state.',
     tags: ['act'],
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['start', 'stop', 'status'], description: 'start = the user explicitly asked to listen together; stop = stop and summarize; status = read state.' },
+        action: { type: 'string', enum: ['start', 'stop', 'status'], description: 'start = user explicitly asked to listen (again = new round, drop the old); stop = stop and summarize; status = read state.' },
         mode: { type: 'string', enum: ['end', 'live', 'both'], description: 'Optional; switch the default delivery mode while starting.' },
       },
       required: ['action'],
@@ -80,6 +80,8 @@ export interface MusicWorldOptions {
 
 interface ActiveSegment {
   startedAt: number;
+  /** 第几轮听歌；用户重新下听歌指令时递增，旧一轮的分析/事件全部作废。 */
+  generation: number;
   analyses: MusicAnalysis[];
   pending: Promise<void>[];
   windows: number;
@@ -145,6 +147,7 @@ export class MusicWorld implements World {
   private playerPaused = false;
   private lastPauseAt = 0;
   private listeningStartedAt = 0;
+  private listenGeneration = 0;
   private logger: (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => void;
 
   constructor(private readonly opts: MusicWorldOptions) {
@@ -387,8 +390,38 @@ export class MusicWorld implements World {
     this.capture = null;
   }
 
+  /** 用户重新下听歌指令：丢掉上一轮的分析、总结和还没投递的事件，换新一轮。 */
+  private async resetListening(): Promise<void> {
+    const old = this.segment;
+    if (old) old.superseded = true;
+    this.listenGeneration++;
+    const cursors: number[] = old ? [...old.sceneCursors] : [];
+    for (const prev of [this.lastEnding, this.lastEnded]) {
+      if (!prev) continue;
+      if (prev.cursor) cursors.push(prev.cursor);
+      cursors.push(...prev.sceneCursors);
+    }
+    this.stopCapture();
+    this.segment = undefined;
+    this.lastEnded = undefined;
+    this.lastEnding = undefined;
+    this.previousEndPromise = undefined;
+    this.lastTrack = '';
+    this.lastAnalysis = undefined;
+    this.lastError = '';
+    this.callTimes = [];
+    this.pendingTrackMeta = undefined;
+    this.polledTrackKey = '';
+    this.playerPaused = false;
+    this.lastPauseAt = 0;
+    const host = this.host;
+    for (const cursor of [...new Set(cursors)]) {
+      try { await host?.withdrawPending?.(cursor); } catch {}
+    }
+  }
+
   private async onSegmentStart(startedAt: number): Promise<void> {
-    const segment: ActiveSegment = { startedAt, analyses: [], pending: [], windows: 0, keyWarned: false, sceneCursors: [] };
+    const segment: ActiveSegment = { startedAt, generation: this.listenGeneration, analyses: [], pending: [], windows: 0, keyWarned: false, sceneCursors: [] };
     segment.trackPromise = this.loadTrack().catch(() => EMPTY_INFO);
     segment.infoPromise = segment.trackPromise.then((track) => this.loadFullInfo(track)).catch(() => EMPTY_INFO);
     this.segment = segment;
@@ -399,7 +432,7 @@ export class MusicWorld implements World {
     if (previous) await Promise.race([previous, new Promise((resolve) => setTimeout(resolve, 8000))]);
 
     const trackInfo = await (segment.trackPromise ?? Promise.resolve(EMPTY_INFO));
-    if (this.segment !== segment || segment.dropped || !this.running) return;
+    if (this.segment !== segment || segment.dropped || segment.generation !== this.listenGeneration || !this.running) return;
 
     const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000
       ? this.lastEnded
@@ -571,6 +604,7 @@ export class MusicWorld implements World {
   private async onWindow(window: WindowChunk): Promise<void> {
     const segment = this.segment;
     if (!segment) return;
+    if (segment.generation !== this.listenGeneration) return;
     if (this.opts.cfg.backend === 'off') return;
     if (!this.allowCall()) {
       this.logger('warn', '分析请求超过每分钟上限，跳过一个窗口');
@@ -603,7 +637,7 @@ export class MusicWorld implements World {
           return;
         }
         if (!outcome.analysis) return;
-        if (segment.dropped || segment.superseded) return;
+        if (segment.dropped || segment.superseded || segment.generation !== this.listenGeneration) return;
 
         // 有可信歌词时以 LRCLIB 为准，模型听写的歌词只作参考。
         if (info.lyrics?.text) {
@@ -672,7 +706,7 @@ export class MusicWorld implements World {
 
   /** 风格/音调突变时再确认一次播放器：变了就切段报新歌；没变不反应；没有播放器信息就截图让 bot 确认。 */
   private async recheckStyle(segment: ActiveSegment, info: ListeningInfo): Promise<void> {
-    if (!this.running || this.segment !== segment || segment.dropped || segment.superseded) return;
+    if (!this.running || this.segment !== segment || segment.dropped || segment.superseded || segment.generation !== this.listenGeneration) return;
     const now = Date.now();
     if (now - (segment.lastRecheckAt ?? 0) < 30_000) return;
     segment.lastRecheckAt = now;
@@ -712,15 +746,17 @@ export class MusicWorld implements World {
   }
 
   private onSegmentEnd(end: SegmentEnd): void {
-    this.previousEndPromise = this.finishSegment(end).catch((e) => {
+    const segment = this.segment;
+    this.previousEndPromise = this.finishSegment(end, segment).catch((e) => {
       this.logger('warn', '总结这一段失败', { error: e instanceof Error ? e.message : String(e) });
     });
   }
 
-  private async finishSegment(end: SegmentEnd): Promise<void> {
-    const segment = this.segment;
-    this.segment = undefined;
+  private async finishSegment(end: SegmentEnd, knownSegment?: ActiveSegment): Promise<void> {
+    const segment = knownSegment ?? this.segment;
+    if (this.segment === segment) this.segment = undefined;
     if (!segment) return;
+    if (segment.generation !== this.listenGeneration) return;
     if (segment.dropped || segment.confirmed !== true) {
       // 播放器曲目已经报过幕，但这一段还没等到确认窗口就停了：暂停/结束都要给个反馈。
       if (!segment.dropped && segment.startedPushed && Date.now() - this.lastPauseAt > 10_000) {
@@ -747,7 +783,7 @@ export class MusicWorld implements World {
         final: false,
         segment,
       };
-      await this.pushEvent(
+      const ending = await this.pushEvent(
         'music.ending',
         `【这一段结束了${this.playerPaused ? '（暂停）' : ''}】最后一窗还在补分析。先给你这一版；music.ended 是最终完整版，不要重复已经说过的。\n\n${partial}`,
         {
@@ -763,13 +799,14 @@ export class MusicWorld implements World {
         },
         'flush',
       );
+      if (ending && this.lastEnding) this.lastEnding.cursor = ending.cursor;
     }
     // 等已发出的窗口分析回来；最多等 40 秒，避免一段永远不结束。
     await Promise.race([
       Promise.allSettled(segment.pending),
       new Promise((resolve) => setTimeout(resolve, 40_000)),
     ]);
-    if (segment.superseded) {
+    if (segment.superseded || segment.generation !== this.listenGeneration) {
       this.logger('debug', '这一段已经被换歌取代，最终总结不再投递', { track: info.context.track });
       this.lastEnding = undefined;
       return;
@@ -857,17 +894,19 @@ export class MusicWorld implements World {
         const mode = args.mode === 'end' || args.mode === 'live' || args.mode === 'both' ? args.mode : undefined;
         if (action === 'start') {
           if (mode) { this.opts.cfg.mode = mode; this.opts.persist({ mode }); }
-          if (!this.running) {
-            try {
-              this.startCapture();
-              await this.pushState('开始一起听系统声音。');
-            } catch (e) {
-              const message = e instanceof Error ? e.message : String(e);
-              this.lastError = message;
-              throw new Error('无法开始采集：' + message);
-            }
+          const wasRunning = this.running;
+          await this.resetListening();
+          try {
+            this.startCapture();
+            await this.pushState(wasRunning
+              ? '重新开始听新的一轮；上一轮的音乐任务已经丢掉。'
+              : '开始一起听系统声音。');
+          } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            this.lastError = message;
+            throw new Error('无法开始采集：' + message);
           }
-          return this.statusText();
+          return wasRunning ? '已重新开始听；上一轮的音乐任务已经丢掉。' : this.statusText();
         }
         if (action === 'stop') {
           const hadSegment = this.segmenter?.hasActiveSegment ?? false;
