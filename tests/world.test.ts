@@ -249,9 +249,9 @@ describe('Music World', () => {
     await world.stop();
   });
 
-  it('drops audio that is not music', async () => {
+  it('keeps listening to pure music even if the first window is unsure', async () => {
     const { world, capture } = makeWorld({
-      analyze: async () => ({ analysis: { ...analysis, isMusic: false, musicConfidence: 0.95, summary: '播客旁白' } }),
+      analyze: async () => ({ analysis: { ...analysis, isMusic: false, musicConfidence: 0.95, summary: '纯器乐/无人声，第一窗不确定' } }),
     });
     const host = new FakeHost();
     await world.start(host);
@@ -261,9 +261,8 @@ describe('Music World', () => {
     capture.feed(silence(3));
     await sleep(150);
     const types = host.events.map((e) => e.type);
-    expect(types).toContain('music.state');
-    expect(types).not.toContain('music.started');
-    expect(types).not.toContain('music.ended');
+    expect(types).toContain('music.started');
+    expect(types).toContain('music.ended');
     await world.stop();
   });
 
@@ -460,7 +459,7 @@ describe('Music World', () => {
       await world.start(host);
       await startListening(world);
       capture.feed(tone(1.2));
-      await vi.advanceTimersByTimeAsync(31_000);
+      await vi.advanceTimersByTimeAsync(36_000);
       expect(capture.cb).toBeNull();
       expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('30 秒'))).toBe(true);
       await world.stop();

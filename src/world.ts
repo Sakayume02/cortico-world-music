@@ -496,30 +496,28 @@ export class MusicWorld implements World {
 
     const trackInfo = await (segment.trackPromise ?? Promise.resolve(EMPTY_INFO));
     if (this.segment !== segment || segment.dropped || segment.generation !== this.listenGeneration || !this.running) return;
+    if (!this.selfAudible) this.lastAudibleAt = Date.now();
 
-    // 只认“非 Coo 应用的实际音频电平”：播放器暂停/开着没声、桌宠自己走路说话，都不能开段分析。
-    const audioActive = !this.opts.cfg.readPlayerMeta
-      || (trackInfo.meta?.source === 'audio-session' && (trackInfo.meta.peak ?? 0) > 0.005);
-    if (!audioActive) {
-      segment.dropped = true;
-      this.logger('debug', '这一段没有外部音频电平（可能只有播放器信息或桌宠自己的声音），丢弃');
-      return;
-    }
-
+    const hasMediaHint = !!trackInfo.meta && (
+      trackInfo.meta.source === 'audio-session'
+      || trackInfo.meta.status === 'window-title'
+      || trackInfo.meta.status === 'audio-other'
+    );
     const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000
       ? this.lastEnded
       : this.lastEnding && Date.now() - this.lastEnding.at < 15_000
         ? this.lastEnding
         : undefined;
-    if (prev && trackInfo.context.track) {
+    if (prev && (trackInfo.context.track || hasMediaHint)) {
       await this.withdrawPrevious(prev);
       await this.pushSwitch(prev, trackInfo, segment);
       this.lastEnded = undefined;
       this.lastEnding = undefined;
-    } else if (trackInfo.context.track) {
+    } else if (trackInfo.context.track || hasMediaHint) {
+      // 只要确实有外部声音，就先报来源（浏览器/播放器），不等第一个分析窗口，避免“在发呆”。
       await this.pushStarted(segment, trackInfo);
     } else {
-      this.logger('debug', '听到声音，等待第一个窗口确认是不是音乐；没有播放器曲目信息');
+      this.logger('debug', '听到实际声音，但还没有来源/曲目信息；等第一个窗口再确认');
     }
   }
 
@@ -688,6 +686,7 @@ export class MusicWorld implements World {
   }
 
   private async onWindow(window: WindowChunk): Promise<void> {
+    if (!this.selfAudible) this.lastAudibleAt = Date.now();
     const segment = this.segment;
     if (!segment) return;
     if (segment.generation !== this.listenGeneration) return;
@@ -743,20 +742,8 @@ export class MusicWorld implements World {
         }
 
         if (segment.confirmed === undefined) {
-          const hasTrack = !!info.context.track;
-          if (outcome.analysis.isMusic !== true && !hasTrack) {
-            segment.confirmed = false;
-            segment.dropped = true;
-            this.logger('debug', '不是音乐，丢弃这一段', { summary: outcome.analysis.summary, confidence: outcome.analysis.musicConfidence });
-            if (this.segment === segment) {
-              this.segment = undefined;
-              this.segmenter?.reset();
-            }
-            return;
-          }
-          if (outcome.analysis.isMusic !== true && hasTrack) {
-            this.logger('debug', '第一窗判成非音乐，但有播放器曲目信息，继续听', { track: info.context.track });
-          }
+          // 不再用“第一窗是否像人声/像音乐”来丢弃：纯音乐、无人声、前奏都可能被误判。
+          // 只要确实有外部声音，就继续分析，让 bot 用听感判断。
           segment.confirmed = true;
           if (!segment.startedPushed) {
             const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000
@@ -838,6 +825,7 @@ export class MusicWorld implements World {
   }
 
   private onSegmentEnd(end: SegmentEnd): void {
+    if (!this.selfAudible) this.lastAudibleAt = Date.now();
     const segment = this.segment;
     this.previousEndPromise = this.finishSegment(end, segment).catch((e) => {
       this.logger('warn', '总结这一段失败', { error: e instanceof Error ? e.message : String(e) });

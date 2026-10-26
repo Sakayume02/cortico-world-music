@@ -272,6 +272,10 @@ export async function readPlayerMetadata(): Promise<PlayerMeta | null> {
     };
   }
 
-  const fallback = gsmtc ?? (await readWindowTitleMetadata());
+  if (gsmtc && gsmtc.status !== 'Paused' && gsmtc.status !== 'Stopped') {
+    return { ...gsmtc, selfPeak: levels.selfPeak };
+  }
+  const win = await readWindowTitleMetadata();
+  const fallback = win ?? gsmtc;
   return fallback ? { ...fallback, selfPeak: levels.selfPeak } : null;
 }
