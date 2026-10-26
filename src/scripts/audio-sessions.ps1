@@ -146,6 +146,7 @@ $rows = foreach ($s in [CorticoAudio.AudioSessionPeaks]::GetSessions()) {
   [pscustomobject]@{
     pid = $s.Pid
     app = if ($p) { $p.ProcessName } else { '' }
+    path = if ($p) { $p.Path } else { '' }
     peak = [math]::Round([double]$s.Peak, 4)
     state = $s.State
   }

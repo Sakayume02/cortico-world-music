@@ -35,6 +35,8 @@ const meta: PlayerMeta = {
   title: '记忆点',
   artist: '陈卓璇',
   status: 'Playing',
+  source: 'audio-session',
+  peak: 0.5,
 };
 
 const browserMeta: PlayerMeta = {
@@ -43,6 +45,8 @@ const browserMeta: PlayerMeta = {
   appName: 'Chrome',
   title: '某视频 - YouTube',
   status: 'Playing',
+  source: 'audio-session',
+  peak: 0.5,
 };
 
 const lyrics: LyricsResult = {
@@ -445,11 +449,50 @@ describe('Music World', () => {
     await world.stop();
   });
 
+  it('auto stops after 30 seconds even if a paused player still reports metadata', async () => {
+    vi.useFakeTimers();
+    try {
+      const { world, capture } = makeWorld({
+        cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, screenFallback: false, lookupLyrics: false, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+        metadataReader: async () => ({ ...meta, status: 'Paused', source: 'gsmtc', peak: undefined }),
+      });
+      const host = new FakeHost();
+      await world.start(host);
+      await startListening(world);
+      capture.feed(tone(1.2));
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(capture.cb).toBeNull();
+      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('30 秒'))).toBe(true);
+      await world.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('skips analysis windows while Coo itself is audible', async () => {
+    let analyzes = 0;
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, screenFallback: false, lookupLyrics: false, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+      metadataReader: async () => ({ ...meta, selfPeak: 0.5 }),
+      analyze: async () => { analyzes++; return { analysis }; },
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+    capture.feed(tone(1.2));
+    await sleep(120);
+    capture.feed(silence(3));
+    await sleep(160);
+    expect(analyzes).toBe(0);
+    await world.stop();
+  });
+
   it('reminds how long it has listened at the configured interval', async () => {
     vi.useFakeTimers();
     try {
       const { world, capture } = makeWorld({
-        cfg: { ...MUSIC_DEFAULTS, reminderMinutes: 1, windowSec: 1, mode: 'end', maxCallsPerMinute: 100, screenFallback: false, readPlayerMeta: false, lookupLyrics: false },
+        cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, reminderMinutes: 1, windowSec: 1, mode: 'end', maxCallsPerMinute: 100, screenFallback: false, lookupLyrics: false },
+        metadataReader: async () => meta,
       });
       const host = new FakeHost();
       await world.start(host);

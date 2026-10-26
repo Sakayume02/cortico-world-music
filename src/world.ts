@@ -146,7 +146,8 @@ export class MusicWorld implements World {
   private reminderTimer: ReturnType<typeof setInterval> | null = null;
   private metadataTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
-  private lastActivityAt = 0;
+  private lastAudibleAt = 0;
+  private selfAudible = false;
   private pollInFlight = false;
   private polledTrackKey = '';
   private pendingTrackMeta?: { meta: PlayerMeta; at: number };
@@ -255,6 +256,9 @@ export class MusicWorld implements World {
     const meta = await this.loadMeta();
     if (!meta) return { context: { sourceKind: 'unknown' } };
     this.polledTrackKey = `${meta.app}|${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
+    if (meta.status === 'audio-other') {
+      return { context: { sourceKind: 'unknown' }, meta };
+    }
     if (meta.kind === 'browser') {
       return {
         context: { sourceKind: 'browser', sourceApp: meta.appName, tabTitle: meta.title || undefined },
@@ -312,7 +316,8 @@ export class MusicWorld implements World {
     this.silenceTimer.unref?.();
     this.listeningStartedAt = Date.now();
     this.stopIdle();
-    this.lastActivityAt = Date.now();
+    this.lastAudibleAt = Date.now();
+    this.selfAudible = false;
     this.idleTimer = setInterval(() => { void this.checkIdle(); }, IDLE_CHECK_MS);
     this.idleTimer.unref?.();
     this.stopHeartbeat();
@@ -337,7 +342,14 @@ export class MusicWorld implements World {
     this.pollInFlight = true;
     try {
       const meta = this.opts.metadataReader ? await this.opts.metadataReader() : await readPlayerMetadata();
-      if (!meta) return;
+      if (!meta) {
+        this.selfAudible = false;
+        return;
+      }
+      if (meta.source === 'audio-session' && (meta.peak ?? 0) > 0.005) {
+        this.lastAudibleAt = Date.now();
+      }
+      this.selfAudible = (meta.selfPeak ?? 0) > 0.005;
       if (meta.status === 'Paused') {
         if (!this.playerPaused) {
           this.playerPaused = true;
@@ -403,10 +415,10 @@ export class MusicWorld implements World {
     }
   }
 
-  /** 连续 30 秒没有可听音乐就自动停，避免 token 白花和反复截图。 */
+  /** 连续 30 秒没有“非 Coo 应用”的实际音频电平就自动停；播放器暂停信息不算声音。 */
   private async checkIdle(): Promise<void> {
-    if (!this.running || this.segmenter?.hasActiveSegment) return;
-    if (Date.now() - this.lastActivityAt < IDLE_STOP_MS) return;
+    if (!this.running) return;
+    if (Date.now() - this.lastAudibleAt < IDLE_STOP_MS) return;
     this.stopIdle();
     this.stopCapture();
     this.segment = undefined;
@@ -472,7 +484,6 @@ export class MusicWorld implements World {
   }
 
   private async onSegmentStart(startedAt: number): Promise<void> {
-    this.lastActivityAt = Date.now();
     const segment: ActiveSegment = { startedAt, generation: this.listenGeneration, analyses: [], pending: [], windows: 0, keyWarned: false, sceneCursors: [] };
     segment.trackPromise = this.loadTrack().catch(() => EMPTY_INFO);
     segment.infoPromise = segment.trackPromise.then((track) => this.loadFullInfo(track)).catch(() => EMPTY_INFO);
@@ -485,6 +496,15 @@ export class MusicWorld implements World {
 
     const trackInfo = await (segment.trackPromise ?? Promise.resolve(EMPTY_INFO));
     if (this.segment !== segment || segment.dropped || segment.generation !== this.listenGeneration || !this.running) return;
+
+    // 只认“非 Coo 应用的实际音频电平”：播放器暂停/开着没声、桌宠自己走路说话，都不能开段分析。
+    const audioActive = !this.opts.cfg.readPlayerMeta
+      || (trackInfo.meta?.source === 'audio-session' && (trackInfo.meta.peak ?? 0) > 0.005);
+    if (!audioActive) {
+      segment.dropped = true;
+      this.logger('debug', '这一段没有外部音频电平（可能只有播放器信息或桌宠自己的声音），丢弃');
+      return;
+    }
 
     const prev = this.lastEnded && Date.now() - this.lastEnded.at < 15_000
       ? this.lastEnded
@@ -668,10 +688,10 @@ export class MusicWorld implements World {
   }
 
   private async onWindow(window: WindowChunk): Promise<void> {
-    this.lastActivityAt = Date.now();
     const segment = this.segment;
     if (!segment) return;
     if (segment.generation !== this.listenGeneration) return;
+    if (segment.dropped || this.selfAudible) return;
     if (this.opts.cfg.backend === 'off') return;
     if (!this.allowCall()) {
       this.logger('warn', '分析请求超过每分钟上限，跳过一个窗口');
@@ -692,6 +712,11 @@ export class MusicWorld implements World {
     const task = (async () => {
       try {
         const info = await (segment.infoPromise ?? Promise.resolve(EMPTY_INFO));
+        // 第一窗如果正好是桌宠自己在报幕/走路，先跳过；后面 poll 看到自己出声也会跳过整窗。
+        if (this.selfAudible || (segment.windows === 1 && (info.meta?.selfPeak ?? 0) > 0.005)) {
+          this.logger('debug', '桌宠自己正在出声，跳过这个窗口，避免把自己的声音当音乐');
+          return;
+        }
         const outcome = this.opts.analyze
           ? await this.opts.analyze(wav, this.opts.cfg, key, this.opts.cfg.windowSec, info.context)
           : await analyzeWithDashscope({
@@ -813,7 +838,6 @@ export class MusicWorld implements World {
   }
 
   private onSegmentEnd(end: SegmentEnd): void {
-    this.lastActivityAt = Date.now();
     const segment = this.segment;
     this.previousEndPromise = this.finishSegment(end, segment).catch((e) => {
       this.logger('warn', '总结这一段失败', { error: e instanceof Error ? e.message : String(e) });
@@ -990,14 +1014,19 @@ export class MusicWorld implements World {
           try {
             const meta = this.opts.metadataReader ? await this.opts.metadataReader() : await readPlayerMetadata();
             if (meta) {
-              const source = meta.kind === 'browser' ? '浏览器' : '播放器';
-              const detail = meta.title
-                ? `${meta.title}${meta.artist ? ' — ' + meta.artist : ''}`
-                : '标题没拿到';
-              const caveat = meta.kind === 'browser' ? '（标签页参考，不一定是正在响的）' : '';
-              lines.push(`当前输入：${source}（${meta.appName}）：${detail}${caveat}${meta.status ? `；状态 ${meta.status}` : ''}`);
+              const external = meta.source === 'audio-session' && (meta.peak ?? 0) > 0.005;
+              if (!external) {
+                lines.push('当前输入：没有外部音乐在响（播放器可能只是暂停/开着，或者只有我自己的声音）。');
+              } else {
+                const source = meta.kind === 'browser' ? '浏览器' : '播放器';
+                const detail = meta.title
+                  ? `${meta.title}${meta.artist ? ' — ' + meta.artist : ''}`
+                  : '标题没拿到';
+                const caveat = meta.kind === 'browser' ? '（标签页参考，不一定是正在响的）' : '';
+                lines.push(`当前输入：${source}（${meta.appName}）：${detail}${caveat}${meta.status ? `；状态 ${meta.status}` : ''}`);
+              }
             } else {
-              lines.push('当前输入：还没认出是哪个程序/什么歌，不猜。');
+              lines.push('当前输入：没有外部音乐在响，也没认出是哪个程序/什么歌；不猜。');
             }
           } catch {
             lines.push('当前输入：读取失败，先按已有信息听。');

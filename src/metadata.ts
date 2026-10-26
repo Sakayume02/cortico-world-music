@@ -20,6 +20,8 @@ export interface PlayerMeta {
   status?: string;
   /** 来自 WASAPI 音频会话时的峰值。 */
   peak?: number;
+  /** Coo/桌宠自己（说话、走路音效）的峰值；默认排除，不计入音乐。 */
+  selfPeak?: number;
   source?: 'gsmtc' | 'window-title' | 'audio-session';
 }
 
@@ -28,6 +30,14 @@ export interface AudioSource {
   appName: string;
   peak: number;
   pid: number;
+  path?: string;
+}
+
+export interface AudioLevels {
+  /** 非 Coo 应用里峰值最高的一个；没有就是 null。 */
+  source: AudioSource | null;
+  /** Coo 自己（含同路径子进程）的最高峰值。 */
+  selfPeak: number;
 }
 
 const PLAYERS: Array<{ match: RegExp; name: string }> = [
@@ -132,9 +142,9 @@ export async function readWindowTitleMetadata(appFilter?: string): Promise<Playe
   return null;
 }
 
-/** 默认输出设备上各音频会话的峰值，挑最高的活动应用（跳过系统声音/Idle）。 */
-export async function readAudioSessionSource(): Promise<AudioSource | null> {
-  if (process.platform !== 'win32') return null;
+/** 默认输出设备上各音频会话的峰值；Coo 自己的音频默认排除，只留真正的外部声音。 */
+export async function readAudioSessionLevels(): Promise<AudioLevels> {
+  if (process.platform !== 'win32') return { source: null, selfPeak: 0 };
   let stdout = '';
   try {
     const result = await run('powershell.exe', [
@@ -142,16 +152,19 @@ export async function readAudioSessionSource(): Promise<AudioSource | null> {
     ], { timeout: 8000, windowsHide: true, maxBuffer: 1024 * 1024 });
     stdout = String(result.stdout ?? '');
   } catch {
-    return null;
+    return { source: null, selfPeak: 0 };
   }
   let data: unknown;
   try {
     data = JSON.parse(stdout.trim() || '[]');
   } catch {
-    return null;
+    return { source: null, selfPeak: 0 };
   }
   const rows = Array.isArray(data) ? data : [data];
+  const selfPath = process.execPath.toLowerCase();
+  const selfPid = process.pid;
   let best: AudioSource | null = null;
+  let selfPeak = 0;
   for (const raw of rows) {
     if (!raw || typeof raw !== 'object') continue;
     const row = raw as Record<string, unknown>;
@@ -159,13 +172,24 @@ export async function readAudioSessionSource(): Promise<AudioSource | null> {
     const pid = typeof row.pid === 'number' ? row.pid : 0;
     const peak = typeof row.peak === 'number' ? row.peak : 0;
     const state = typeof row.state === 'number' ? row.state : 0;
+    const path = typeof row.path === 'string' ? row.path : '';
     // 1 = AudioSessionState.Active；pid 0 是系统声音，跳过。
     if (!app || app.toLowerCase() === 'idle' || pid <= 0 || state !== 1 || peak < 0.005) continue;
+    const isSelf = pid === selfPid || (!!path && !!selfPath && path.toLowerCase() === selfPath);
+    if (isSelf) {
+      selfPeak = Math.max(selfPeak, peak);
+      continue;
+    }
     if (!best || peak > best.peak) {
-      best = { app, appName: mediaAppName(app), peak, pid };
+      best = { app, appName: mediaAppName(app), peak, pid, path };
     }
   }
-  return best;
+  return { source: best, selfPeak };
+}
+
+/** 只要“正在发声的非 Coo 应用”，给来源判断用。 */
+export async function readAudioSessionSource(): Promise<AudioSource | null> {
+  return (await readAudioSessionLevels()).source;
 }
 
 /** 当前 GSMTC 媒体会话（只读一个当前会话，不再做窗口兜底）。 */
@@ -210,18 +234,30 @@ function sameMediaApp(meta: PlayerMeta, source: AudioSource): boolean {
  */
 export async function readPlayerMetadata(): Promise<PlayerMeta | null> {
   // 音频会话和 GSMTC 相互独立，并行跑，换歌/切换出声应用时反应快一点。
-  const [audio, gsmtc] = await Promise.all([readAudioSessionSource(), readGsmtcSession()]);
+  const [levels, gsmtc] = await Promise.all([readAudioSessionLevels(), readGsmtcSession()]);
+  const audio = levels.source;
   if (audio) {
     const kind = classifyMediaApp(audio.app);
-    // 游戏/其它程序：不硬套播放器信息，交给截图/未知来源。
-    if (kind === 'other') return null;
+    // 游戏/其它程序：不硬套播放器信息；仍然告诉 World 有外部声音在响，交给截图/未知。
+    if (kind === 'other') {
+      return {
+        kind: 'player',
+        app: audio.app,
+        appName: audio.appName,
+        title: '',
+        status: 'audio-other',
+        peak: audio.peak,
+        selfPeak: levels.selfPeak,
+        source: 'audio-session',
+      };
+    }
 
     if (gsmtc && sameMediaApp(gsmtc, audio)) {
-      return { ...gsmtc, peak: audio.peak, source: 'audio-session' };
+      return { ...gsmtc, peak: audio.peak, selfPeak: levels.selfPeak, source: 'audio-session' };
     }
 
     const win = await readWindowTitleMetadata(audio.app);
-    if (win) return { ...win, peak: audio.peak, source: 'audio-session' };
+    if (win) return { ...win, peak: audio.peak, selfPeak: levels.selfPeak, source: 'audio-session' };
 
     // 音频会话确认了来源，但窗口没有标题：仍返回来源，让 bot 走截图/不猜。
     return {
@@ -231,9 +267,11 @@ export async function readPlayerMetadata(): Promise<PlayerMeta | null> {
       title: '',
       status: 'audio-session',
       peak: audio.peak,
+      selfPeak: levels.selfPeak,
       source: 'audio-session',
     };
   }
 
-  return gsmtc ?? (await readWindowTitleMetadata());
+  const fallback = gsmtc ?? (await readWindowTitleMetadata());
+  return fallback ? { ...fallback, selfPeak: levels.selfPeak } : null;
 }
