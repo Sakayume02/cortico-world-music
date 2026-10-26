@@ -209,13 +209,13 @@ function sameMediaApp(meta: PlayerMeta, source: AudioSource): boolean {
  * 这样后台挂着的播放器不会抢当前浏览器；浏览器标题只作标签页参考。
  */
 export async function readPlayerMetadata(): Promise<PlayerMeta | null> {
-  const audio = await readAudioSessionSource();
+  // 音频会话和 GSMTC 相互独立，并行跑，换歌/切换出声应用时反应快一点。
+  const [audio, gsmtc] = await Promise.all([readAudioSessionSource(), readGsmtcSession()]);
   if (audio) {
     const kind = classifyMediaApp(audio.app);
     // 游戏/其它程序：不硬套播放器信息，交给截图/未知来源。
     if (kind === 'other') return null;
 
-    const gsmtc = await readGsmtcSession();
     if (gsmtc && sameMediaApp(gsmtc, audio)) {
       return { ...gsmtc, peak: audio.peak, source: 'audio-session' };
     }
@@ -235,5 +235,5 @@ export async function readPlayerMetadata(): Promise<PlayerMeta | null> {
     };
   }
 
-  return (await readGsmtcSession()) ?? (await readWindowTitleMetadata());
+  return gsmtc ?? (await readWindowTitleMetadata());
 }

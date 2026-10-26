@@ -13,12 +13,12 @@ export interface MusicConfigSection {
   apiKeySecret: string;
   /** 默认投递方式：一段结束总结 / 实时短评 / 两者都要。 */
   mode: 'end' | 'live' | 'both';
-  /** 一段结束后：继续听下一首，还是就此停止。 */
-  afterSong: 'continue' | 'stop';
   /** 每个分析窗口的秒数；上传前会降为 16k 单声道。 */
   windowSec: number;
   /** 每分钟最多几次云端分析，防止刷接口。 */
   maxCallsPerMinute: number;
+  /** 每多少分钟提醒一次“已经听了多久”；0 = 不提醒。 */
+  reminderMinutes: number;
   /** 换歌时没有媒体信息或信息不确定，是否截一张屏幕给 bot 看播放器界面。 */
   screenFallback: boolean;
   /** 是否从 Windows 媒体会话读桌面播放器的曲目/歌手（浏览器不走这条）。 */
@@ -36,9 +36,9 @@ export const MUSIC_DEFAULTS: MusicConfigSection = {
   model: 'qwen3.8-omni-flash',
   apiKeySecret: 'AUDIO_API_KEY',
   mode: 'both',
-  afterSong: 'continue',
   windowSec: 20,
   maxCallsPerMinute: 3,
+  reminderMinutes: 5,
   screenFallback: true,
   readPlayerMeta: true,
   lookupLyrics: true,
@@ -60,11 +60,12 @@ export const MUSIC_CONFIG_GROUP: ConfigGroup = {
         enum: ['end', 'live', 'both'],
         'x-hot': true,
       },
-      'worlds.music.afterSong': {
-        type: 'string',
-        title: '听完一首后',
-        description: 'continue = 一直听，直到你说停；stop = 这首结束、总结完就自动停。',
-        enum: ['continue', 'stop'],
+      'worlds.music.reminderMinutes': {
+        type: 'number',
+        title: '收听时长提醒（分钟）',
+        description: '每多少分钟提醒一次已经听了多久；0 = 不提醒。默认 5。',
+        minimum: 0,
+        maximum: 120,
         'x-hot': true,
       },
       'worlds.music.windowSec': {

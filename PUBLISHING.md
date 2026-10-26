@@ -150,7 +150,7 @@ https://www.npmjs.com/package/cortico-world-music 打开。
 
 1. 打开 Coopanion →「扩展」→ 搜索/手动输入 `cortico-world-music`。
 2. 安装，重启 Coopanion。
-3. 打开 World 页「一起感受音乐」→「接口与密钥」，确认面板正常；密钥填好后保存。
+3. 打开 World 页「你的音乐搭子」→「接口与密钥」，确认面板正常；密钥填好后保存。
 4. 对桌宠说「一起听音乐」，放一首歌，确认能报歌名、能总结、能换歌。
 
 > 如果你本机还留着"从本机目录安装"的 link 版，先在扩展页卸掉/停用它，再装 npm 版，避免两份同名。

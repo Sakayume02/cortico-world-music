@@ -1,5 +1,5 @@
 /**
- * 一起感受音乐：系统环回采集 → 静音/换歌判断 → 播放器信息/歌词 → 云端音频理解 → 事件与工具。
+ * 你的音乐搭子：系统环回采集 → 静音/换歌判断 → 播放器信息/歌词 → 云端音频理解 → 事件与工具。
  *
  * 这个 World 默认待命，只有用户明确说要一起听音乐（bot 调 music_watch start）才开始采集。
  * 事件正文先给「感受」，参数放在末尾的内部参考里，让 bot 用人的方式回应。
@@ -143,6 +143,7 @@ export class MusicWorld implements World {
   private callTimes: number[] = [];
   private silenceTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private reminderTimer: ReturnType<typeof setInterval> | null = null;
   private metadataTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
   private lastActivityAt = 0;
@@ -162,7 +163,7 @@ export class MusicWorld implements World {
   envPromptVars(): Record<string, string> {
     return {
       'music.mode': this.opts.cfg.mode,
-      'music.afterSong': this.opts.cfg.afterSong,
+      'music.reminderMinutes': String(this.opts.cfg.reminderMinutes),
       'music.backend': this.opts.cfg.backend,
       'music.model': this.opts.cfg.model,
     };
@@ -174,7 +175,7 @@ export class MusicWorld implements World {
 
   webUi(): WorldWebUiDecl {
     return {
-      label: '一起感受音乐',
+      label: '你的音乐搭子',
       lamps: [{
         label: '一起听',
         state: this.running ? 'online' : this.lastError ? 'error' : 'offline',
@@ -189,13 +190,13 @@ export class MusicWorld implements World {
       config: [MUSIC_CONFIG_GROUP],
       promptDocs: [{
         key: 'worlds.music.envPrompt',
-        title: '一起感受音乐 · 环境提示词',
+        title: '你的音乐搭子 · 环境提示词',
         description: '这个 World 进 system 前缀的那一段：默认待命、明确指令才开始、用感受而不是参数回应。',
         path: ENV_PROMPT_FILE,
         role: 'envPrompt',
         vars: [
           { name: 'music.mode', description: '当前默认模式：end / live / both。' },
-          { name: 'music.afterSong', description: '听完一首后：continue / stop。' },
+          { name: 'music.reminderMinutes', description: '每多少分钟提醒一次已经听了多久；0 = 不提醒。' },
           { name: 'music.backend', description: '当前分析后端：dashscope / openai-compatible / off。' },
           { name: 'music.model', description: '当前云端模型名。' },
         ],
@@ -317,6 +318,12 @@ export class MusicWorld implements World {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => { void this.pushHeartbeat(); }, 60_000);
     this.heartbeatTimer.unref?.();
+    this.stopReminder();
+    const reminderMinutes = Math.max(0, Math.round(this.opts.cfg.reminderMinutes));
+    if (reminderMinutes > 0) {
+      this.reminderTimer = setInterval(() => { void this.pushReminder(); }, reminderMinutes * 60_000);
+      this.reminderTimer.unref?.();
+    }
     this.stopMetadataPoll();
     if (this.opts.cfg.readPlayerMeta) {
       this.metadataTimer = setInterval(() => { void this.pollPlayerTrack(); }, 3000);
@@ -382,6 +389,20 @@ export class MusicWorld implements World {
     }
   }
 
+  /** 按配置每隔几分钟提醒一次已经听了多久，避免一直听、过度消耗。 */
+  private async pushReminder(): Promise<void> {
+    if (!this.running) return;
+    const minutes = Math.max(1, Math.round((Date.now() - this.listeningStartedAt) / 60_000));
+    await this.pushState(`已经一起听了 ${minutes} 分钟；想停就说停，想继续就接着听。`, 'info', { reminder: true, minutes });
+  }
+
+  private stopReminder(): void {
+    if (this.reminderTimer) {
+      clearInterval(this.reminderTimer);
+      this.reminderTimer = null;
+    }
+  }
+
   /** 连续 30 秒没有可听音乐就自动停，避免 token 白花和反复截图。 */
   private async checkIdle(): Promise<void> {
     if (!this.running || this.segmenter?.hasActiveSegment) return;
@@ -412,6 +433,7 @@ export class MusicWorld implements World {
     this.running = false;
     this.stopTimer();
     this.stopHeartbeat();
+    this.stopReminder();
     this.stopMetadataPoll();
     this.stopIdle();
     this.segmenter = null;
@@ -885,13 +907,6 @@ export class MusicWorld implements World {
       segment,
     };
     this.lastEnding = undefined;
-    if (this.opts.cfg.afterSong === 'stop') {
-      this.lastEnded = undefined;
-      this.lastEnding = undefined;
-      this.stopCapture();
-      this.lastTrack = '';
-      await this.pushState('按设置：听完这首就停，已经停止。想继续再让我听。');
-    }
   }
 
   private allowCall(): boolean {
@@ -973,6 +988,22 @@ export class MusicWorld implements World {
       ...MUSIC_TOOL_DECLS[1]!,
       handler: async () => {
         const lines = [this.statusText()];
+        if (this.running) {
+          try {
+            const meta = this.opts.metadataReader ? await this.opts.metadataReader() : await readPlayerMetadata();
+            if (meta) {
+              const source = meta.kind === 'browser' ? '浏览器' : '播放器';
+              const detail = meta.title
+                ? `${meta.title}${meta.artist ? ' — ' + meta.artist : ''}`
+                : '标题没拿到';
+              lines.push(`当前输入：${source}（${meta.appName}）：${detail}${meta.status ? `；状态 ${meta.status}` : ''}`);
+            } else {
+              lines.push('当前输入：还没认出是哪个程序/什么歌，不猜。');
+            }
+          } catch {
+            lines.push('当前输入：读取失败，先按已有信息听。');
+          }
+        }
         if (this.lastAnalysis) lines.push('最近一次分析：\n' + formatAnalysis(this.lastAnalysis));
         else lines.push('还没拿到过分析。');
         return lines.join('\n');
@@ -1057,9 +1088,13 @@ export class MusicWorld implements World {
     const parts = [
       this.running ? '正在一起听系统声音' : '待命：还没有开始听（需要用户明确说想一起听音乐）',
       `模式：${cfg.mode}`,
-      `听完一首：${cfg.afterSong === 'stop' ? '停止' : '继续听下一首'}`,
+      cfg.reminderMinutes > 0 ? `时长提醒：每 ${cfg.reminderMinutes} 分钟` : '时长提醒：关闭',
       `后端：${cfg.backend}（${cfg.model}）`,
     ];
+    if (this.running) {
+      const mins = Math.max(0, Math.round((Date.now() - this.listeningStartedAt) / 60_000));
+      parts.push(`本轮已听：约 ${mins} 分钟；没有音乐 30 秒会自动停，说停也会停。`);
+    }
     if (this.lastTrack) parts.push('当前曲目：' + this.lastTrack);
     if (segment) {
       const sec = Math.round((Date.now() - segment.startedAt) / 1000);

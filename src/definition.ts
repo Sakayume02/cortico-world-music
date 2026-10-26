@@ -5,10 +5,10 @@ import { MUSIC_TOOL_DECLS, MusicWorld } from './world.ts';
 
 export const MUSIC: WorldDefinition<MusicConfigSection> = {
   id: 'music',
-  label: '一起感受音乐',
+  label: '你的音乐搭子',
   defaults: () => ({ ...MUSIC_DEFAULTS }),
   preflight: () => {
-    if (process.platform !== 'win32') throw new Error('一起感受音乐目前只支持 Windows（WASAPI 系统环回）。');
+    if (process.platform !== 'win32') throw new Error('你的音乐搭子目前只支持 Windows（WASAPI 系统环回）。');
     // 原生件载不进来时提前给出人话，而不是等挂载后才报错。
     loadLoopback();
   },
@@ -54,7 +54,7 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
       },
       {
         type: 'music.state',
-        description: { zh: 'World 自己的状态：待命、开始听、停止、错误、暂停、每 1 分钟【在听】心跳，以及风格突变时的截图确认；不是音乐内容。', en: 'The World state: standby, listening, stopped, error, pause, a one-minute heartbeat, and a screenshot recheck on style shifts; not music content.' },
+        description: { zh: 'World 自己的状态：待命、开始听、停止、错误、暂停、每 1 分钟【在听】心跳、时长提醒、没有音乐 30 秒的自动停止，以及风格突变时的截图确认；不是音乐内容。', en: 'The World state: standby, listening, stopped, error, pause, a one-minute heartbeat, duration reminders, a 30-second no-music auto-stop, and a screenshot recheck on style shifts; not music content.' },
         trigger: 'flush',
       },
     ],

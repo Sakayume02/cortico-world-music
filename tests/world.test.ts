@@ -276,7 +276,7 @@ describe('Music World', () => {
   it('exposes the env prompt, standby label and config group', () => {
     const { world } = makeWorld();
     const ui = world.webUi();
-    expect(ui.label).toBe('一起感受音乐');
+    expect(ui.label).toBe('你的音乐搭子');
     expect(ui.lamps?.[0]?.state).toBe('offline');
     expect(ui.lamps?.[0]?.hint).toContain('待命');
     expect(ui.config?.some((c) => c.id === 'world:music')).toBe(true);
@@ -304,7 +304,6 @@ describe('Music World', () => {
     }]) as { backend: string };
     expect(saved.backend).toBe('openai-compatible');
     expect(captured.persisted?.model).toBe('my-audio-model');
-    expect(captured.persisted?.afterSong).toBeUndefined();
 
     const keyState = await invoke('settings', 'save-key', [{ key: 'sk-test-123456' }]) as { hasKey: boolean };
     expect(captured.stored?.name).toBe('AUDIO_API_KEY');
@@ -395,20 +394,25 @@ describe('Music World', () => {
     await world.stop();
   });
 
-  it('stops after one song when afterSong is stop', async () => {
-    const { world, capture } = makeWorld({
-      cfg: { ...MUSIC_DEFAULTS, afterSong: 'stop', windowSec: 1, mode: 'end', maxCallsPerMinute: 10, screenFallback: false, readPlayerMeta: false, lookupLyrics: false },
-    });
-    const host = new FakeHost();
-    await world.start(host);
-    await startListening(world);
-    capture.feed(tone(1.2));
-    await sleep(30);
-    capture.feed(silence(3));
-    await sleep(180);
-    expect(host.events.some((e) => e.type === 'music.ended')).toBe(true);
-    expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('听完这首就停'))).toBe(true);
-    expect(capture.cb).toBeNull();
-    await world.stop();
+  it('reminds how long it has listened at the configured interval', async () => {
+    vi.useFakeTimers();
+    try {
+      const { world, capture } = makeWorld({
+        cfg: { ...MUSIC_DEFAULTS, reminderMinutes: 1, windowSec: 1, mode: 'end', maxCallsPerMinute: 100, screenFallback: false, readPlayerMeta: false, lookupLyrics: false },
+      });
+      const host = new FakeHost();
+      await world.start(host);
+      await startListening(world);
+      for (let i = 0; i < 3; i++) {
+        capture.feed(tone(1.2));
+        await vi.advanceTimersByTimeAsync(20_000);
+      }
+      capture.feed(tone(1.2));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('已经一起听了'))).toBe(true);
+      await world.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

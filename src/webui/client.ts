@@ -1,4 +1,4 @@
-/** 「一起感受音乐」的 WebUI 面板：选择后端/模型、填接口地址和 API Key。 */
+/** 「你的音乐搭子」的 WebUI 面板：选择后端/模型、填接口地址和 API Key。 */
 import type { WebUiClientBundle, WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 
 interface SettingsState {
