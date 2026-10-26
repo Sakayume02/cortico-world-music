@@ -2,6 +2,7 @@ import { describeTools, type WorldDefinition } from 'cortico/world.ts';
 import { MUSIC_DEFAULTS, type MusicConfigSection } from './config.ts';
 import { loadLoopback } from './capture.ts';
 import { MUSIC_TOOL_DECLS, MusicWorld } from './world.ts';
+import { GsmTcSourceMonitor } from './source-monitor.ts';
 
 export const MUSIC: WorldDefinition<MusicConfigSection> = {
   id: 'music',
@@ -19,6 +20,7 @@ export const MUSIC: WorldDefinition<MusicConfigSection> = {
     secret: (name) => ctx.secret(name),
     storeSecret: (name, value) => ctx.storeSecret(name, value),
     persist: (patch) => ctx.persist(patch),
+    sourceMonitor: new GsmTcSourceMonitor(),
   }),
   describe: {
     tools: describeTools(MUSIC_TOOL_DECLS, {

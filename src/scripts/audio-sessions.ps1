@@ -14,6 +14,7 @@ namespace CorticoAudio
         public int Pid;
         public float Peak;
         public int State;
+        public string Display = "";
     }
 
     [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
@@ -115,6 +116,9 @@ namespace CorticoAudio
                 int state = 0;
                 try { ctrl.GetState(out state); } catch { }
 
+                string display = "";
+                try { ctrl.GetDisplayName(out display); } catch { }
+
                 int pid = 0;
                 try
                 {
@@ -131,7 +135,7 @@ namespace CorticoAudio
                 }
                 catch { }
 
-                list.Add(new SessionInfo { Pid = pid, Peak = peak, State = state });
+                list.Add(new SessionInfo { Pid = pid, Peak = peak, State = state, Display = display });
             }
             return list.ToArray();
         }
@@ -146,6 +150,7 @@ $rows = foreach ($s in [CorticoAudio.AudioSessionPeaks]::GetSessions()) {
   [pscustomobject]@{
     pid = $s.Pid
     app = if ($p) { $p.ProcessName } else { '' }
+    display = $s.Display
     path = if ($p) { $p.Path } else { '' }
     peak = [math]::Round([double]$s.Peak, 4)
     state = $s.State

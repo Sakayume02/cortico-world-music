@@ -10,6 +10,7 @@ import { MusicWorld, type MusicWorldOptions } from '../src/world.ts';
 import type { CaptureLike } from '../src/capture.ts';
 import type { MusicAnalysis, ListeningContext } from '../src/prompt.ts';
 import type { PlayerMeta } from '../src/metadata.ts';
+import type { SourceMonitorLike, SourceSnapshot } from '../src/source-monitor.ts';
 import type { LyricsResult } from '../src/lyrics.ts';
 import { FakeHost } from './helpers/fake-host.ts';
 
@@ -81,6 +82,14 @@ class FakeCapture implements CaptureLike {
   start(onPcm: (pcm: Int16Array) => void): void { this.started++; this.cb = onPcm; }
   stop(): void { this.cb = null; }
   feed(pcm: Int16Array): void { this.cb?.(pcm); }
+}
+
+class FakeSourceMonitor implements SourceMonitorLike {
+  cb: ((snapshot: SourceSnapshot) => void) | null = null;
+  started = 0;
+  start(onSnapshot: (snapshot: SourceSnapshot) => void): void { this.started++; this.cb = onSnapshot; }
+  stop(): void { this.cb = null; }
+  push(snapshot: SourceSnapshot): void { this.cb?.(snapshot); }
 }
 
 let scratch: string;
@@ -332,6 +341,34 @@ describe('Music World', () => {
     expect(started.text).toContain('歌名没拿到');
     expect(host.events.some((e) => e.type === 'music.ended')).toBe(true);
     await world.stop();
+  });
+
+  it('waits, announces source, and reacts to pause/switch', async () => {
+    vi.useFakeTimers();
+    try {
+      const monitor = new FakeSourceMonitor();
+      const { world } = makeWorld({ sourceMonitor: monitor });
+      const host = new FakeHost();
+      await world.start(host);
+      await startListening(world);
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('等你'))).toBe(true);
+
+      monitor.push({ at: Date.now(), source: { app: 'chrome.exe', appName: 'Chrome', title: 'A', status: 'Playing' }, sessions: [] });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('检测到'))).toBe(true);
+
+      monitor.push({ at: Date.now(), source: { app: 'chrome.exe', appName: 'Chrome', title: 'B', status: 'Playing' }, sessions: [] });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('切歌'))).toBe(true);
+
+      monitor.push({ at: Date.now(), source: null, sessions: [] });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('暂停'))).toBe(true);
+      await world.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('auto stops after 30 seconds without music', async () => {

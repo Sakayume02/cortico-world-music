@@ -17,6 +17,7 @@ import { analyzeWithDashscope, type AnalysisOutcome } from './analysis.ts';
 import { capturePrimaryScreen, type ScreenShot } from './screen.ts';
 import { SystemAudioCapture, type CaptureLike } from './capture.ts';
 import { readPlayerMetadata, type PlayerMeta } from './metadata.ts';
+import type { SourceMonitorLike, SourceSnapshot } from './source-monitor.ts';
 import { lookupLyrics, type LyricsResult } from './lyrics.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
@@ -76,6 +77,7 @@ export interface MusicWorldOptions {
   captureFactory?: () => CaptureLike;
   analyze?: (wav: Uint8Array, cfg: MusicConfigSection, key: string, windowSec: number, context?: ListeningContext) => Promise<AnalysisOutcome>;
   metadataReader?: () => Promise<PlayerMeta | null>;
+  sourceMonitor?: SourceMonitorLike;
   lyricsResolver?: (meta: PlayerMeta) => Promise<LyricsResult | null>;
   screenCapture?: () => Promise<ScreenShot | null>;
   log?: (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => void;
@@ -146,6 +148,10 @@ export class MusicWorld implements World {
   private reminderTimer: ReturnType<typeof setInterval> | null = null;
   private metadataTimer: ReturnType<typeof setInterval> | null = null;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
+  private waitingTimer: ReturnType<typeof setTimeout> | null = null;
+  private waiting = false;
+  private pauseNotified = false;
+  private sourceKey = '';
   private lastAudibleAt = 0;
   private selfAudible = false;
   private pollInFlight = false;
@@ -318,8 +324,12 @@ export class MusicWorld implements World {
     this.stopIdle();
     this.lastAudibleAt = Date.now();
     this.selfAudible = false;
+    this.sourceKey = '';
+    this.pauseNotified = false;
     this.idleTimer = setInterval(() => { void this.checkIdle(); }, IDLE_CHECK_MS);
     this.idleTimer.unref?.();
+    this.beginWaiting();
+    this.opts.sourceMonitor?.start((snapshot) => this.onSourceSnapshot(snapshot));
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => { void this.pushHeartbeat(); }, 60_000);
     this.heartbeatTimer.unref?.();
@@ -448,9 +458,62 @@ export class MusicWorld implements World {
     this.stopReminder();
     this.stopMetadataPoll();
     this.stopIdle();
+    this.stopWaiting();
+    this.opts.sourceMonitor?.stop();
+    this.sourceKey = '';
+    this.pauseNotified = false;
     this.segmenter = null;
     this.capture?.stop();
     this.capture = null;
+  }
+
+  /** 开始听歌后先等 2 秒：没有声音就让 bot 说“我在等你”。 */
+  private beginWaiting(): void {
+    this.stopWaiting();
+    this.waiting = true;
+    this.waitingTimer = setTimeout(() => {
+      this.waitingTimer = null;
+      if (!this.running || !this.waiting) return;
+      // 保留 waiting 直到真的有声音，这样收到第一帧时还能主动说“检测到来源”。
+      void this.pushState('我在等你放音乐；有声音我就开始听。', 'info', { waiting: true });
+    }, 2000);
+    this.waitingTimer.unref?.();
+  }
+
+  private stopWaiting(): void {
+    this.waiting = false;
+    if (this.waitingTimer) {
+      clearTimeout(this.waitingTimer);
+      this.waitingTimer = null;
+    }
+  }
+
+  /** 常驻 GSMTC 音源：谁在 Playing 就是谁在发声；暂停/切歌/等待都从这里驱动。 */
+  private onSourceSnapshot(snapshot: SourceSnapshot): void {
+    if (!this.running) return;
+    const source = snapshot.source;
+    if (source) {
+      this.lastAudibleAt = Date.now();
+      const wasWaiting = this.waiting;
+      this.stopWaiting();
+      const key = `${source.app}|${source.title ?? ''}|${source.artist ?? ''}`;
+      const changed = !!this.sourceKey && this.sourceKey !== key;
+      this.sourceKey = key;
+      this.pauseNotified = false;
+      if (wasWaiting) {
+        void this.pushState(`检测到${source.appName}在出声；我开始听。`, 'info', { source: true, app: source.appName, title: source.title });
+      }
+      if (changed) {
+        this.logger('debug', '实时音源切歌', { from: this.sourceKey, to: key, app: source.app });
+        void this.pushState(`像切歌了；我重新听这一段（${source.title ?? source.appName}）。`, 'info', { switched: true, app: source.appName, title: source.title });
+        this.segmenter?.flush();
+      }
+      return;
+    }
+    if (this.sourceKey && !this.pauseNotified) {
+      this.pauseNotified = true;
+      void this.pushState('播放器/浏览器暂停了；我先等你。', 'info', { paused: true });
+    }
   }
 
   /** 用户重新下听歌指令：丢掉上一轮的分析、总结和还没投递的事件，换新一轮。 */
