@@ -253,15 +253,15 @@ export class MusicWorld implements World {
   private async loadTrack(): Promise<ListeningInfo> {
     const meta = await this.loadMeta();
     if (!meta) return { context: { sourceKind: 'unknown' } };
-    this.polledTrackKey = `${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
+    this.polledTrackKey = `${meta.app}|${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
     if (meta.kind === 'browser') {
       return {
-        context: { sourceKind: 'browser', sourceApp: meta.appName, tabTitle: meta.title },
+        context: { sourceKind: 'browser', sourceApp: meta.appName, tabTitle: meta.title || undefined },
         meta,
       };
     }
     return {
-      context: { sourceKind: 'player', sourceApp: meta.appName, track: meta.title, artist: meta.artist, album: meta.album },
+      context: { sourceKind: 'player', sourceApp: meta.appName, track: meta.title || undefined, artist: meta.artist, album: meta.album },
       meta,
     };
   }
@@ -269,7 +269,7 @@ export class MusicWorld implements World {
   /** 歌词/背景在后台补，不挡报幕和换歌；浏览器不查歌词。 */
   private async loadFullInfo(trackInfo: ListeningInfo): Promise<ListeningInfo> {
     const meta = trackInfo.meta;
-    if (!meta || meta.kind !== 'player' || !this.opts.cfg.lookupLyrics) return trackInfo;
+    if (!meta || meta.kind !== 'player' || !meta.title || !this.opts.cfg.lookupLyrics) return trackInfo;
     let lyrics: LyricsResult | null = null;
     try {
       lyrics = this.opts.lyricsResolver ? await this.opts.lyricsResolver(meta) : await lookupLyrics(meta);
@@ -341,7 +341,7 @@ export class MusicWorld implements World {
       } else {
         this.playerPaused = false;
       }
-      const key = `${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
+      const key = `${meta.app}|${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
       if (!this.polledTrackKey) {
         this.polledTrackKey = key;
         return;
@@ -514,16 +514,21 @@ export class MusicWorld implements World {
     const tabTitle = info.context.tabTitle;
     const sourceApp = info.context.sourceApp;
     const browser = info.context.sourceKind === 'browser';
+    const player = info.context.sourceKind === 'player';
     const trackLine = track
       ? `开始一起听：${track}${artist ? ' — ' + artist : ''}（来自播放器媒体信息）。`
       : browser
         ? `浏览器在放：${tabTitle ?? '标签页标题没拿到'}${sourceApp ? `（${sourceApp}）` : ''}；这只是标签页参考，不是已确认歌名。`
-        : '没认出来是哪个程序/歌名；先正常听，不要猜。';
+        : player
+          ? `播放器正在放：${sourceApp ?? '未知播放器'}；歌名没拿到，先听，不硬报。`
+          : '没认出来是哪个程序/歌名；先正常听，不要猜。';
     const announce = track
       ? `先用一句话报个幕：“是${artist ? artist + ' 的 ' : ''}《${track}》呀，我来听一下。” 然后跟着听。`
       : browser
         ? '先用一句话说“浏览器里在放，我先听着；歌名还没确认，不硬报。” 然后跟着听。'
-        : '先用一句话说“我没认出来是什么，先听着；不乱猜。” 然后跟着听。';
+        : player
+          ? '先用一句话说“播放器里在放，我先听着；歌名没拿到，不硬报。” 然后跟着听。'
+          : '先用一句话说“我没认出来是什么，先听着；不乱猜。” 然后跟着听。';
     const lines = [trackLine, announce, '跟着听；想动就动，用现有动作；不想动就安静听。听歌时别打盹/睡觉，专注一点。结束/暂停时再说感受。'];
 
     const uncertain = !track || info.meta?.status === 'window-title';
@@ -546,7 +551,9 @@ export class MusicWorld implements World {
       ? [track, artist].filter(Boolean).join(' — ')
       : browser
         ? [tabTitle ?? '浏览器', sourceApp].filter(Boolean).join(' — ')
-        : '来源未知';
+        : player
+          ? [sourceApp ?? '播放器', '播放器'].filter(Boolean).join(' — ')
+          : '来源未知';
     segment.startedPushed = true;
     await this.pushEvent('music.started', lines.join('\n'), {
       origin: 'external',
@@ -577,16 +584,21 @@ export class MusicWorld implements World {
     const tabTitle = info.context.tabTitle;
     const sourceApp = info.context.sourceApp;
     const browser = info.context.sourceKind === 'browser';
+    const player = info.context.sourceKind === 'player';
     const newLine = track
       ? `现在开始：${track}${artist ? ' — ' + artist : ''}（来自播放器媒体信息）。`
       : browser
         ? `现在开始：浏览器里的一首（${tabTitle ?? '标题没拿到'}；只是标签页参考，不是已确认歌名）。`
-        : '现在开始：新的一首（没认出来是哪个程序/歌名）。';
+        : player
+          ? `现在开始：播放器（${sourceApp ?? '未知播放器'}）里的一首；歌名没拿到，不硬报。`
+          : '现在开始：新的一首（没认出来是哪个程序/歌名）。';
     const announce = track
       ? `“是${artist ? artist + ' 的 ' : ''}《${track}》呀，我来听一下。”`
       : browser
         ? '“浏览器里在放，我先听着；歌名还没确认，不硬报。”'
-        : '“我没认出来是什么，先听着；不乱猜。”';
+        : player
+          ? '“播放器里在放，我先听着；歌名没拿到，不硬报。”'
+          : '“我没认出来是什么，先听着；不乱猜。”';
     const lines = [
       '【换歌】',
       prev.track ? `上一首：${prev.track}` : '上一首：未知',
@@ -611,7 +623,9 @@ export class MusicWorld implements World {
       ? [track, artist].filter(Boolean).join(' — ')
       : browser
         ? [tabTitle ?? '浏览器', sourceApp].filter(Boolean).join(' — ')
-        : '来源未知';
+        : player
+          ? [sourceApp ?? '播放器', '播放器'].filter(Boolean).join(' — ')
+          : '来源未知';
     segment.startedPushed = true;
     await this.pushEvent('music.switch', lines.join('\n'), {
       origin: 'external',
@@ -749,7 +763,7 @@ export class MusicWorld implements World {
       meta = null;
     }
     if (meta) {
-      const key = `${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
+      const key = `${meta.app}|${meta.title}|${meta.artist ?? ''}|${meta.album ?? ''}`;
       if (key === this.polledTrackKey) {
         this.logger('debug', '风格/音调变了，但播放器曲目没变，不反应', { track: info.context.track });
         return;

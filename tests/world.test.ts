@@ -312,6 +312,25 @@ describe('Music World', () => {
     expect(keyState.hasKey).toBe(true);
   });
 
+  it('keeps the player source when the audio session knows the app but the title is missing', async () => {
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, screenFallback: false, lookupLyrics: false, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+      metadataReader: async () => ({ ...meta, title: '' }),
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+    capture.feed(tone(1.2));
+    await sleep(40);
+    capture.feed(silence(3));
+    await sleep(160);
+    const started = host.events.find((e) => e.type === 'music.started')!;
+    expect(started.text).toContain('播放器');
+    expect(started.text).toContain('歌名没拿到');
+    expect(host.events.some((e) => e.type === 'music.ended')).toBe(true);
+    await world.stop();
+  });
+
   it('auto stops after 30 seconds without music', async () => {
     vi.useFakeTimers();
     try {
