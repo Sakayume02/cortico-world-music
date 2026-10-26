@@ -206,7 +206,7 @@ describe('Music World', () => {
     await world.stop();
   });
 
-  it('gives feedback when a known player track stops before the first window confirms', async () => {
+  it('does not emit a stop state when a known player track ends before the first window confirms', async () => {
     const { world, capture } = makeWorld({
       cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
       metadataReader: async () => meta,
@@ -220,7 +220,8 @@ describe('Music World', () => {
     capture.feed(silence(3));
     await sleep(160);
     expect(host.events.some((e) => e.type === 'music.started')).toBe(true);
-    expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('音乐停下来了'))).toBe(true);
+    // 旧逻辑会在这里补“音乐停下来了”，和刚发的 music.started 矛盾；现在必须保持沉默。
+    expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('音乐停下来了'))).toBe(false);
     await world.stop();
   });
 
@@ -361,6 +362,56 @@ describe('Music World', () => {
     expect(again).toContain('重新开始');
     expect(host.withdrawn.length).toBeGreaterThan(0);
     expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('重新开始'))).toBe(true);
+    await world.stop();
+  });
+
+  it('marks browser metadata as a tab hint in music_now', async () => {
+    const { world } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, screenFallback: false, lookupLyrics: false, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+      metadataReader: async () => browserMeta,
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+    const now = world.tools().find((t) => t.name === 'music_now')!;
+    const text = String(await now.handler({}, {} as ToolCallContext));
+    expect(text).toContain('标签页参考');
+    expect(text).toContain('某视频');
+    await world.stop();
+  });
+
+  it('tells the bot that an open browser tab is not proof of playback', async () => {
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, screenFallback: true, lookupLyrics: false, windowSec: 1, mode: 'end', maxCallsPerMinute: 10 },
+      metadataReader: async () => browserMeta,
+      screenCapture: async () => ({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png', name: 'screen.png' }),
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+    capture.feed(tone(1.2));
+    await sleep(40);
+    const started = host.events.find((e) => e.type === 'music.started')!;
+    expect(started.text).toContain('开着的标签页');
+    expect(started.text).toContain('不算正在响');
+    await world.stop();
+  });
+
+  it('does not emit a contradictory stop state right after announcing a track', async () => {
+    const { world, capture } = makeWorld({
+      cfg: { ...MUSIC_DEFAULTS, readPlayerMeta: true, lookupLyrics: false, windowSec: 20, mode: 'end', maxCallsPerMinute: 10, screenFallback: false },
+      metadataReader: async () => meta,
+    });
+    const host = new FakeHost();
+    await world.start(host);
+    await startListening(world);
+    capture.feed(tone(1.2));
+    await sleep(60);
+    expect(host.events.some((e) => e.type === 'music.started')).toBe(true);
+    // 报幕之后、第一个确认窗口之前就静音：旧逻辑会补发“音乐停下来了”，现在不应再发。
+    capture.feed(silence(3));
+    await sleep(200);
+    expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('音乐停下来了'))).toBe(false);
     await world.stop();
   });
 

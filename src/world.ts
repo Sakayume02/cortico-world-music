@@ -563,8 +563,8 @@ export class MusicWorld implements World {
     }
     if (screenshot) {
       lines.push(browser
-        ? '附一张当前屏幕，供你确认浏览器标签页/歌名；标签页标题只是参考，以屏幕和音频为准；还是认不出就说不知道，别猜。'
-        : '附一张当前屏幕，供你确认播放器/歌名；如果播放器信息和屏幕不一致，以屏幕为准；识别不出就只说听感。');
+        ? '附一张当前屏幕，仅供参考：只有屏幕上明确显示正在播放/有播放进度的那一项才算确认；开着的标签页、暂停的播放器、静止页面都不算正在响。没有把握就只说听感或不知道，别报歌名。'
+        : '附一张当前屏幕，仅供参考：以明确正在播放的播放器/界面为准；暂停、静止、只是开着的窗口都不算正在响，没把握就只说听感。');
     }
     if (note) lines.push(note);
     if (info.lyrics) lines.push('已经拿到完整可信歌词（LRCLIB），歌词不用你听写；引用只引短句。');
@@ -637,8 +637,8 @@ export class MusicWorld implements World {
       const shot = await this.captureScreen();
       screenshot = shot.blob;
       if (screenshot) lines.push(browser
-        ? '附一张当前屏幕，供你确认浏览器标签页/新歌；标签页标题只是参考，以屏幕和音频为准；还是认不出就说不知道。'
-        : '附一张当前屏幕，供你确认新歌；如果播放器信息和屏幕不一致，以屏幕为准。');
+        ? '附一张当前屏幕，仅供参考：只有屏幕上明确显示正在播放/有播放进度的那一项才算确认；开着的标签页、暂停的播放器、静止页面都不算正在响。没有把握就只说听感或不知道，别报歌名。'
+        : '附一张当前屏幕，仅供参考：以明确正在播放的播放器/界面为准；暂停、静止、只是开着的窗口都不算正在响，没把握就只说听感。');
       else if (shot.note) lines.push(shot.note);
     }
     this.lastTrack = track
@@ -802,7 +802,7 @@ export class MusicWorld implements World {
     const lines = [
       '【风格/音调突变】刚才这段音乐的风格或调式突然变了，可能已经切歌。',
       shot.blob
-        ? '附一张当前屏幕，请确认现在播放的是什么：如果换成新歌，就直接报新歌；如果还是同一首，就继续听，不要硬说切歌。'
+        ? '附一张当前屏幕，仅供参考：只有明确显示正在播放/有播放进度的那一项才算确认；开着的标签页、暂停的播放器、静止页面都不算正在响。没有把握就说不知道，不要硬报切歌。'
         : '没有播放器信息，也拿不到截图；先不要硬说切歌，继续听。',
     ];
     await this.pushEvent('music.state', lines.join('\n'), {
@@ -825,17 +825,15 @@ export class MusicWorld implements World {
     if (this.segment === segment) this.segment = undefined;
     if (!segment) return;
     if (segment.generation !== this.listenGeneration) return;
-    if (segment.dropped || segment.confirmed !== true) {
-      // 播放器曲目已经报过幕，但这一段还没等到确认窗口就停了：暂停/结束都要给个反馈。
-      if (!segment.dropped && segment.startedPushed && Date.now() - this.lastPauseAt > 10_000) {
-        this.lastPauseAt = Date.now();
-        await this.pushState('音乐停下来了（暂停或结束）；这一段还没确认是音乐，我先不总结。', 'info', { paused: true });
-      }
-      this.logger('debug', '这一段没有确认是音乐，不总结');
+    if (segment.superseded) {
+      this.logger('debug', '这一段已经被换歌取代，不补总结也不发停止状态');
       return;
     }
-    if (segment.superseded) {
-      this.logger('debug', '这一段已经被换歌取代，不补总结');
+    if (segment.dropped || segment.confirmed !== true) {
+      // 刚报幕/刚换歌的未确认段结束时不再补“音乐停下来了”：
+      // 那会和刚发出的 music.started/switch 直接矛盾，让 bot 不知道该信哪个。
+      // 真暂停由播放器暂停状态负责；真正没音乐由 30 秒空闲自动停负责。
+      this.logger('debug', '这一段没有确认是音乐，不总结也不发停止状态');
       return;
     }
     const info = await (segment.infoPromise ?? Promise.resolve(EMPTY_INFO));
@@ -996,7 +994,8 @@ export class MusicWorld implements World {
               const detail = meta.title
                 ? `${meta.title}${meta.artist ? ' — ' + meta.artist : ''}`
                 : '标题没拿到';
-              lines.push(`当前输入：${source}（${meta.appName}）：${detail}${meta.status ? `；状态 ${meta.status}` : ''}`);
+              const caveat = meta.kind === 'browser' ? '（标签页参考，不一定是正在响的）' : '';
+              lines.push(`当前输入：${source}（${meta.appName}）：${detail}${caveat}${meta.status ? `；状态 ${meta.status}` : ''}`);
             } else {
               lines.push('当前输入：还没认出是哪个程序/什么歌，不猜。');
             }
