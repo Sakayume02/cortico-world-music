@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,7 +81,7 @@ class FakeCapture implements CaptureLike {
 
 let scratch: string;
 beforeEach(() => { scratch = mkdtempSync(join(tmpdir(), 'music-world-')); });
-afterEach(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => { vi.useRealTimers(); rmSync(scratch, { recursive: true, force: true }); });
 
 function makeWorld(overrides: Partial<MusicWorldOptions> = {}): { world: MusicWorld; capture: FakeCapture } {
   const capture = new FakeCapture();
@@ -310,6 +310,22 @@ describe('Music World', () => {
     expect(captured.stored?.name).toBe('AUDIO_API_KEY');
     expect(captured.stored?.value).toBe('sk-test-123456');
     expect(keyState.hasKey).toBe(true);
+  });
+
+  it('auto stops after 30 seconds without music', async () => {
+    vi.useFakeTimers();
+    try {
+      const { world, capture } = makeWorld();
+      const host = new FakeHost();
+      await world.start(host);
+      await startListening(world);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(capture.cb).toBeNull();
+      expect(host.events.some((e) => e.type === 'music.state' && e.text.includes('30 秒'))).toBe(true);
+      await world.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('starts a fresh round when the user asks again and drops old pending events', async () => {

@@ -20,6 +20,9 @@ import { readPlayerMetadata, type PlayerMeta } from './metadata.ts';
 import { lookupLyrics, type LyricsResult } from './lyrics.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
+/** 没有可听音乐这么久就自动停，省 token 和反复截图。 */
+const IDLE_STOP_MS = 30_000;
+const IDLE_CHECK_MS = 5_000;
 
 export const MUSIC_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
   {
@@ -141,6 +144,8 @@ export class MusicWorld implements World {
   private silenceTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private metadataTimer: ReturnType<typeof setInterval> | null = null;
+  private idleTimer: ReturnType<typeof setInterval> | null = null;
+  private lastActivityAt = 0;
   private pollInFlight = false;
   private polledTrackKey = '';
   private pendingTrackMeta?: { meta: PlayerMeta; at: number };
@@ -305,6 +310,10 @@ export class MusicWorld implements World {
     this.silenceTimer = setInterval(() => this.segmenter?.tick(), 500);
     this.silenceTimer.unref?.();
     this.listeningStartedAt = Date.now();
+    this.stopIdle();
+    this.lastActivityAt = Date.now();
+    this.idleTimer = setInterval(() => { void this.checkIdle(); }, IDLE_CHECK_MS);
+    this.idleTimer.unref?.();
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => { void this.pushHeartbeat(); }, 60_000);
     this.heartbeatTimer.unref?.();
@@ -373,6 +382,25 @@ export class MusicWorld implements World {
     }
   }
 
+  /** 连续 30 秒没有可听音乐就自动停，避免 token 白花和反复截图。 */
+  private async checkIdle(): Promise<void> {
+    if (!this.running || this.segmenter?.hasActiveSegment) return;
+    if (Date.now() - this.lastActivityAt < IDLE_STOP_MS) return;
+    this.stopIdle();
+    this.stopCapture();
+    this.segment = undefined;
+    this.lastTrack = '';
+    this.lastError = '';
+    await this.pushState('连续 30 秒没有听到音乐，先自动停止听；想继续再让我听。', 'info', { idleStop: true });
+  }
+
+  private stopIdle(): void {
+    if (this.idleTimer) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
   private stopTimer(): void {
     if (this.silenceTimer) {
       clearInterval(this.silenceTimer);
@@ -385,6 +413,7 @@ export class MusicWorld implements World {
     this.stopTimer();
     this.stopHeartbeat();
     this.stopMetadataPoll();
+    this.stopIdle();
     this.segmenter = null;
     this.capture?.stop();
     this.capture = null;
@@ -421,6 +450,7 @@ export class MusicWorld implements World {
   }
 
   private async onSegmentStart(startedAt: number): Promise<void> {
+    this.lastActivityAt = Date.now();
     const segment: ActiveSegment = { startedAt, generation: this.listenGeneration, analyses: [], pending: [], windows: 0, keyWarned: false, sceneCursors: [] };
     segment.trackPromise = this.loadTrack().catch(() => EMPTY_INFO);
     segment.infoPromise = segment.trackPromise.then((track) => this.loadFullInfo(track)).catch(() => EMPTY_INFO);
@@ -602,6 +632,7 @@ export class MusicWorld implements World {
   }
 
   private async onWindow(window: WindowChunk): Promise<void> {
+    this.lastActivityAt = Date.now();
     const segment = this.segment;
     if (!segment) return;
     if (segment.generation !== this.listenGeneration) return;
@@ -746,6 +777,7 @@ export class MusicWorld implements World {
   }
 
   private onSegmentEnd(end: SegmentEnd): void {
+    this.lastActivityAt = Date.now();
     const segment = this.segment;
     this.previousEndPromise = this.finishSegment(end, segment).catch((e) => {
       this.logger('warn', '总结这一段失败', { error: e instanceof Error ? e.message : String(e) });
